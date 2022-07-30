@@ -388,18 +388,10 @@ jobs:
           path: builds
 
   # reuse workflow via workflow_call
-  build-android:
-    uses: logseq/logseq/.github/workflows/build-android.yml@master
-    with:
-      build-target: "${{ github.event.inputs.build-target }}"
-    secrets:
-      ANDROID_KEYSTORE: "${{ secrets.ANDROID_KEYSTORE }}"
-      ANDROID_KEYSTORE_PASSWORD: "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
-      SENTRY_AUTH_TOKEN: "${{ secrets.SENTRY_AUTH_TOKEN }}"
-
+  
   nightly-release:
     if: ${{ github.event_name == 'schedule' || github.event.inputs.build-target == 'nightly' }}
-    needs: [ build-macos-x64, build-macos-arm64, build-linux, build-windows, build-android ]
+    needs: [ build-macos-x64, build-macos-arm64, build-linux, build-windows ]
     runs-on: ubuntu-18.04
     steps:
       - name: Download MacOS x64 Artifacts
@@ -426,18 +418,13 @@ jobs:
           name: logseq-win64-builds
           path: ./
 
-      - name: Download Android Artifacts
-        uses: actions/download-artifact@v2
-        with:
-          name: logseq-android-builds
-          path: ./
+    
 
       - name: Generate SHA256 checksums
         run: |
           sha256sum *-darwin-* > SHA256SUMS.txt
           sha256sum *-win-* >> SHA256SUMS.txt
           sha256sum *-linux-* >> SHA256SUMS.txt
-          sha256sum *.apk >> SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: List files
@@ -461,7 +448,6 @@ jobs:
             ./*.dmg
             ./*.exe
             ./*.AppImage
-            ./*.apk
 
   release:
     # NOTE: For now, we only have beta channel to be released on Github
@@ -493,11 +479,7 @@ jobs:
           name: logseq-win64-builds
           path: ./
 
-      - name: Download Android Artifacts
-        uses: actions/download-artifact@v2
-        with:
-          name: logseq-android-builds
-          path: ./
+      
 
       - name: List files
         run: ls -rl
@@ -513,7 +495,6 @@ jobs:
           sha256sum *-darwin-* > SHA256SUMS.txt
           sha256sum *-win-* >> SHA256SUMS.txt
           sha256sum *-linux-* >> SHA256SUMS.txt
-          sha256sum *.apk >> SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       - name: Create Release Draft
@@ -533,4 +514,3 @@ jobs:
             ./*.dmg
             ./*.exe
             ./*.AppImage
-            ./*.apk
