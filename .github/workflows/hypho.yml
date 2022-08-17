@@ -298,7 +298,7 @@ jobs:
   release:
     # NOTE: For now, we only have beta channel to be released on Github
     if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.build-target == 'beta' }}
-    needs: [ build-linux, build-windows, build-android ]
+    needs: [ build-linux, build-windows]
     runs-on: ubuntu-18.04
     steps:
       
