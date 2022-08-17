@@ -60,6 +60,8 @@
      :modal/close-btn?                      nil
      :modal/subsets                         []
 
+     ;; left sidebar
+     :ui/navigation-item-collapsed?         {}
 
      ;; right sidebar
      :ui/fullscreen?                        false
@@ -119,6 +121,7 @@
      :db/last-transact-time                 {}
      ;; whether database is persisted
      :db/persisted?                         {}
+
      :cursor-range                          nil
 
      :selection/mode                        false
@@ -149,7 +152,7 @@
      :mobile/show-toolbar?                  false
      :mobile/show-recording-bar?            false
      :mobile/show-tabbar?                   false
-     
+
      ;; plugin
      :plugin/enabled                        (and (util/electron?)
                                                  ;; true false :theme-only
@@ -295,17 +298,22 @@
       (when-not (mobile-util/native-platform?)
         "local")))
 
+(def default-config
+  "Default config for a repo-specific, user config"
+  {:feature/enable-search-remove-accents? true
+   :default-arweave-gateway "https://arweave.net"})
+
 (defn get-config
+  "User config for the given repo or current repo if none given"
   ([]
    (get-config (get-current-repo)))
   ([repo-url]
-   (get-in @state [:config repo-url])))
-
-(def default-arweave-gateway "https://arweave.net")
+   (merge default-config
+          (get-in @state [:config repo-url]))))
 
 (defn get-arweave-gateway
   []
-  (:arweave/gateway (get-config) default-arweave-gateway))
+  (:arweave/gateway (get-config)))
 
 (defonce built-in-macros
          {"img" "[:img.$4 {:src \"$1\" :style {:width $2 :height $3}}]"})
@@ -683,12 +691,24 @@
   []
   (:selection/blocks @state))
 
-(defn get-selection-block-ids
-  []
-  (->> (sub :selection/blocks)
+(defn- get-selected-block-ids
+  [blocks]
+  (->> blocks
        (keep #(when-let [id (dom/attr % "blockid")]
                 (uuid id)))
        (distinct)))
+
+(defn get-selection-block-ids
+  []
+  (get-selected-block-ids (get-selection-blocks)))
+
+(defn sub-block-selected?
+  [block-uuid]
+  (rum/react
+   (rum/derived-atom [state] [::select-block block-uuid]
+     (fn [state]
+       (contains? (set (get-selected-block-ids (:selection/blocks state)))
+                  block-uuid)))))
 
 (defn get-selection-start-block-or-first
   []
@@ -707,7 +727,6 @@
 
 (defn conj-selection-block!
   [block direction]
-  (dom/add-class! block "selected noselect")
   (swap! state assoc
          :selection/mode true
          :selection/blocks (-> (conj (vec (:selection/blocks @state)) block)
@@ -716,10 +735,18 @@
 
 (defn drop-last-selection-block!
   []
-  (let [last-block (peek (vec (:selection/blocks @state)))]
+  (let [direction (:selection/direction @state)
+        up? (= direction :up)
+        blocks (:selection/blocks @state)
+        last-block (if up?
+                     (first blocks)
+                     (peek (vec blocks)))
+        blocks' (if up?
+                  (rest blocks)
+                  (pop (vec blocks)))]
     (swap! state assoc
            :selection/mode true
-           :selection/blocks (pop (vec (:selection/blocks @state))))
+           :selection/blocks blocks')
     last-block))
 
 (defn get-selection-direction
@@ -737,6 +764,10 @@
   (swap! state assoc
          :custom-context-menu/show? false
          :custom-context-menu/links nil))
+
+(defn toggle-navigation-item-collapsed!
+  [item]
+  (update-state! [:ui/navigation-item-collapsed? item] not))
 
 (defn toggle-sidebar-open?!
   []
@@ -1315,12 +1346,13 @@
         (>= (- now last-time) 3000)))))
 
 (defn input-idle?
-  [repo]
+  [repo & {:keys [diff]
+           :or {diff 1000}}]
   (when repo
     (or
       (when-let [last-time (get-in @state [:editor/last-input-time repo])]
         (let [now (util/time-ms)]
-          (>= (- now last-time) 500)))
+          (>= (- now last-time) diff)))
       ;; not in editing mode
       (not (get-edit-input-id)))))
 
@@ -1620,11 +1652,11 @@
   []
   (:modal/id @state))
 
-(defn edit-in-query-component
+(defn edit-in-query-or-refs-component
   []
-  (and (editing?)
-       ;; config
-       (:custom-query? (last (get-editor-args)))))
+  (let [config (last (get-editor-args))]
+    {:custom-query? (:custom-query? config)
+     :ref? (:ref? config)}))
 
 (defn set-auth-id-token
   [id-token]
@@ -1693,3 +1725,7 @@
 (defn unlinked-dir?
   [dir]
   (contains? (:file/unlinked-dirs @state) dir))
+
+(defn enable-search-remove-accents?
+  []
+  (:feature/enable-search-remove-accents? (get-config)))

@@ -134,9 +134,11 @@
                             {:before     #(notification/show!
                                            (ui/loading (t :graph/save))
                                            :warning)
-                             :on-success #(notification/show!
-                                           (ui/loading (t :graph/save-success))
-                                           :warning)
+                             :on-success #(do
+                                            (notification/clear-all!)
+                                            (notification/show!
+                                             (t :graph/save-success)
+                                             :success))
                              :on-error   #(notification/show!
                                            (t :graph/save-error)
                                            :error)}))
@@ -520,6 +522,10 @@
     (state/update-state! :file/unlinked-dirs (fn [dirs] (disj dirs dir))))
   (when (= dir (config/get-repo-dir repo))
     (fs/watch-dir! dir)))
+
+(defmethod handle :file/alter [[_ repo path content]]
+  (p/let [_ (file-handler/alter-file repo path content {:from-disk? true})]
+    (ui-handler/re-render-root!)))
 
 (defn run!
   []

@@ -917,8 +917,11 @@
 #?(:cljs
    (defn search-normalize
      "Normalize string for searching (loose)"
-     [s]
-     (removeAccents (.normalize (string/lower-case s) "NFKC"))))
+     [s remove-accents?]
+     (let [normalize-str (.normalize (string/lower-case s) "NFKC")]
+      (if remove-accents?
+        (removeAccents  normalize-str)
+        normalize-str))))
 
 #?(:cljs
    (defn file-name-sanity
@@ -1031,6 +1034,15 @@
             res#))
         (do ~@body))))
 
+#?(:clj
+   (defmacro with-time
+     "Evaluates expr and prints the time it took. Returns the value of expr and the spent time."
+     [expr]
+     `(let [start# (cljs.core/system-time)
+            ret# ~expr]
+        {:result ret#
+         :time (.toFixed (- (cljs.core/system-time) start#) 6)})))
+
 ;; TODO: profile and profileEnd
 
 ;; Copy from hiccup
@@ -1063,6 +1075,8 @@
   (= (get-relative-path "a/b/c/d/g.org" "a/b/c/e/f.org")
      "../e/f.org"))
 
+(defn keyname [key] (str (namespace key) "/" (name key)))
+
 #?(:cljs
    (defn select-highlight!
      [blocks]
@@ -1074,8 +1088,6 @@
      [blocks]
      (doseq [block blocks]
        (d/remove-class! block "selected" "noselect"))))
-
-(defn keyname [key] (str (namespace key) "/" (name key)))
 
 (defn batch [in max-time handler buf-atom]
   (async/go-loop [buf buf-atom t (async/timeout max-time)]
