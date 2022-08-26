@@ -24,11 +24,11 @@
    (atom
     {:route-match                           nil
      :today                                 nil
-     :system/events                         (async/chan 100)
-     :db/batch-txs                          (async/chan 100)
-     :file/writes                           (async/chan 100)
+     :system/events                         (async/chan 1000)
+     :db/batch-txs                          (async/chan 1000)
+     :file/writes                           (async/chan 10000)
      :file/unlinked-dirs                    #{}
-     :reactive/custom-queries               (async/chan 100)
+     :reactive/custom-queries               (async/chan 1000)
      :notification/show?                    false
      :notification/content                  nil
      :repo/loading-files?                   {}
@@ -133,6 +133,7 @@
      :selection/direction                   :down
      :custom-context-menu/show?             false
      :custom-context-menu/links             nil
+     :custom-context-menu/position          nil
 
      ;; pages or blocks in the right sidebar
      ;; It is a list of `[repo db-id block-type block-data]` 4-tuple
@@ -230,6 +231,10 @@
      :file-sync/download-init-progress      nil
 
      :encryption/graph-parsing?             false
+
+     :ui/find-in-page                       nil
+     :graph/importing                       nil
+     :graph/importing-state                 {}
      })))
 
 ;; block uuid -> {content(String) -> ast}
@@ -368,9 +373,11 @@
                  (get (sub-config) (get-current-repo))))))
 
 (defn enable-journals?
-  [repo]
-  (not (false? (:feature/enable-journals?
-                (get (sub-config) repo)))))
+  ([]
+   (enable-journals? (get-current-repo)))
+  ([repo]
+   (not (false? (:feature/enable-journals?
+                 (get (sub-config) repo))))))
 
 (defn enable-flashcards?
   ([]
@@ -754,16 +761,18 @@
   (:selection/direction @state))
 
 (defn show-custom-context-menu!
-  [links]
+  [links position]
   (swap! state assoc
          :custom-context-menu/show? true
-         :custom-context-menu/links links))
+         :custom-context-menu/links links
+         :custom-context-menu/position position))
 
 (defn hide-custom-context-menu!
   []
   (swap! state assoc
          :custom-context-menu/show? false
-         :custom-context-menu/links nil))
+         :custom-context-menu/links nil
+         :custom-context-menu/position nil))
 
 (defn toggle-navigation-item-collapsed!
   [item]
@@ -998,10 +1007,6 @@
   []
   (set-state! :ui/file-component nil))
 
-(defn get-file-component
-  []
-  (get @state :ui/file-component))
-
 (defn set-journals-length!
   [value]
   (when value
@@ -1150,11 +1155,6 @@
 (defn get-reactive-custom-queries-chan
   []
   (:reactive/custom-queries @state))
-
-(defn get-write-chan-length
-  []
-  (let [c (get-file-write-chan)]
-    (count (gobj/get c "buf"))))
 
 (defn get-left-sidebar-open?
   []

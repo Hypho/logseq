@@ -10,6 +10,7 @@
             [cljs-bean.core :as bean]
             [cljs-time.coerce :as tc]
             [cljs-time.core :as t]
+            [clojure.pprint]
             [dommy.core :as d]
             [frontend.mobile.util :refer [native-platform?]]
             [logseq.graph-parser.util :as gp-util]
@@ -78,8 +79,7 @@
    (defn electron?
      []
      (when (and js/window (gobj/get js/window "navigator"))
-       (let [ua (string/lower-case js/navigator.userAgent)]
-         (string/includes? ua " electron")))))
+       (gstring/caseInsensitiveContains js/navigator.userAgent " electron"))))
 
 #?(:cljs
    (defn mocked-open-dir-path
@@ -338,10 +338,6 @@
      (when e (.stopPropagation e))))
 
 #?(:cljs
-   (defn cur-doc-top []
-     (.. js/document -documentElement -scrollTop)))
-
-#?(:cljs
    (defn element-top [elem top]
      (when elem
        (if (.-offsetParent elem)
@@ -487,6 +483,13 @@
   (if (string? s)
     (string/lower-case s) s))
 
+#?(:cljs
+   (defn safe-path-join [prefix & paths]
+     (let [path (apply node-path.join (cons prefix paths))]
+       (if (and (electron?) (gstring/caseInsensitiveStartsWith path "file://"))
+         (js/decodeURIComponent (subs path 7))
+         path))))
+
 (defn trim-safe
   [s]
   (when s
@@ -529,17 +532,18 @@
          (str prefix new-value)))
      s)))
 
-(defonce default-escape-chars "[]{}().+*?|")
+(defonce escape-chars "[]{}().+*?|")
+
+(defn escape-regex-chars
+  "Escapes characters in string `old-value"
+  [old-value]
+  (reduce (fn [acc escape-char]
+            (string/replace acc escape-char (str "\\" escape-char)))
+          old-value escape-chars))
 
 (defn replace-ignore-case
-  [s old-value new-value & [escape-chars]]
-  (let [escape-chars (or escape-chars default-escape-chars)
-        old-value (if (string? escape-chars)
-                    (reduce (fn [acc escape-char]
-                              (string/replace acc escape-char (str "\\" escape-char)))
-                            old-value escape-chars)
-                    old-value)]
-    (string/replace s (re-pattern (str "(?i)" old-value)) new-value)))
+  [s old-value new-value]
+  (string/replace s (re-pattern (str "(?i)" (escape-regex-chars old-value))) new-value))
 
 ;; copy from https://stackoverflow.com/questions/18735665/how-can-i-get-the-positions-of-regex-matches-in-clojurescript
 #?(:cljs
@@ -890,11 +894,6 @@
    (defn url-encode
      [string]
      (some-> string str (js/encodeURIComponent) (.replace "+" "%20"))))
-
-#?(:cljs
-   (defn url-decode
-     [string]
-     (some-> string str (js/decodeURIComponent))))
 
 (def windows-reserved-chars #"[:\\*\\?\"<>|]+")
 
