@@ -1,4 +1,6 @@
 (ns electron.handler
+  "This ns starts the event handling for the electron main process and defines
+  all the application-specific event types"
   (:require ["electron" :refer [ipcMain dialog app autoUpdater shell]]
             [cljs-bean.core :as bean]
             ["fs" :as fs]
@@ -22,6 +24,7 @@
             [electron.window :as win]
             [electron.file-sync-rsapi :as rsapi]
             [electron.backup-file :as backup-file]
+            [cljs.reader :as reader]
             [electron.find-in-page :as find]))
 
 (defmulti handle (fn [_window args] (keyword (first args))))
@@ -110,8 +113,7 @@
         (let [backup-path (try
                             (backup-file/backup-file repo :backup-dir path (path/extname path) content)
                             (catch :default e
-                              (println "Backup file failed")
-                              (js/console.dir e)))]
+                              (.error utils/logger (str "Backup file failed: " e))))]
           (utils/send-to-renderer window "notification" {:type "error"
                                                          :payload (str "Write to the file " path
                                                                        " failed, "
@@ -211,6 +213,30 @@
 (defmethod handle :getGraphs [_window [_]]
   (get-graphs))
 
+(defn- read-txid-info!
+  [root]
+  (try
+    (let [txid-path (.join path root "logseq/graphs-txid.edn")]
+      (when (fs/existsSync txid-path)
+        (when-let [sync-meta (and (not (string/blank? root))
+                                  (.toString (.readFileSync fs txid-path)))]
+          (reader/read-string sync-meta))))
+    (catch js/Error _e
+      (js/console.debug "[read txid meta] #" root (.-message _e)))))
+
+(defmethod handle :inflateGraphsInfo [_win [_ graphs]]
+  (if (seq graphs)
+    (for [{:keys [root] :as graph} graphs]
+      (if-let [sync-meta (read-txid-info! root)]
+        (assoc graph
+               :sync-meta sync-meta
+               :GraphUUID (second sync-meta))
+        graph))
+    []))
+
+(defmethod handle :readGraphTxIdInfo [_win [_ root]]
+  (read-txid-info! root))
+
 (defn- get-graph-path
   [graph-name]
   (when graph-name
@@ -279,7 +305,7 @@
         (try
           (fs-extra/removeSync path)
           (catch js/Error e
-            (js/console.error e)))))
+            (.error utils/logger (str "Clear cache: " e))))))
     (utils/send-to-renderer window "redirect" {:payload {:to :home}})))
 
 (defmethod handle :clearCache [window _]
@@ -289,6 +315,9 @@
 
 (defmethod handle :openDialog [^js _window _messages]
   (open-dir-dialog))
+
+(defmethod handle :copyDirectory [^js _window [_ src dest opts]]
+  (fs-extra/copy src dest opts))
 
 (defmethod handle :getLogseqDotDirRoot []
   (utils/get-ls-dotdir-root))
@@ -304,6 +333,13 @@
 
 (defmethod handle :getUserDefaultPlugins []
   (utils/get-ls-default-plugins))
+
+(defmethod handle :validateUserExternalPlugins [_win [_ urls]]
+  (zipmap urls (for [url urls]
+                 (try
+                   (and (fs-extra/pathExistsSync url)
+                        (fs-extra/pathExistsSync (path/join url "package.json")))
+                   (catch js/Error _e false)))))
 
 (defmethod handle :relaunchApp []
   (.relaunch app) (.quit app))
@@ -436,18 +472,20 @@
         windows (win/get-graph-all-windows dir)]
     (> (count windows) 1)))
 
-(defmethod handle :addDirWatcher [^js _window [_ dir]]
+(defmethod handle :addDirWatcher [^js _window [_ dir options]]
   ;; receive dir path (not repo / graph) from frontend
   ;; Windows on same dir share the same watcher
   ;; Only close file watcher when:
   ;;    1. there is no one window on the same dir
   ;;    2. reset file watcher to resend `add` event on window refreshing
   (when dir
-    (watcher/watch-dir! dir)))
+    (watcher/watch-dir! dir options)
+    nil))
 
 (defmethod handle :unwatchDir [^js _window [_ dir]]
   (when dir
-    (watcher/close-watcher! dir)))
+    (watcher/close-watcher! dir)
+    nil))
 
 (defn open-new-window!
   "Persist db first before calling! Or may break db persistency"
@@ -483,6 +521,9 @@
 ;; file-sync-rs-apis ;;
 ;;;;;;;;;;;;;;;;;;;;;;;
 
+(defmethod handle :key-gen [_]
+  (rsapi/key-gen))
+
 (defmethod handle :set-env [_ args]
   (apply rsapi/set-env (rest args)))
 
@@ -501,6 +542,9 @@
 (defmethod handle :update-local-files [_ args]
   (apply rsapi/update-local-files (rest args)))
 
+(defmethod handle :download-version-files [_ args]
+  (apply rsapi/download-version-files (rest args)))
+
 (defmethod handle :delete-remote-files [_ args]
   (apply rsapi/delete-remote-files (rest args)))
 
@@ -510,8 +554,20 @@
 (defmethod handle :update-remote-files [_ args]
   (apply rsapi/update-remote-files (rest args)))
 
+(defmethod handle :decrypt-fnames [_ args]
+  (apply rsapi/decrypt-fnames (rest args)))
+
+(defmethod handle :encrypt-fnames [_ args]
+  (apply rsapi/encrypt-fnames (rest args)))
+
+(defmethod handle :encrypt-with-passphrase [_ args]
+  (apply rsapi/encrypt-with-passphrase (rest args)))
+
+(defmethod handle :decrypt-with-passphrase [_ args]
+  (apply rsapi/decrypt-with-passphrase (rest args)))
+
 (defmethod handle :default [args]
-  (println "Error: no ipc handler for: " (bean/->js args)))
+  (.error utils/logger "Error: no ipc handler for: " (bean/->js args)))
 
 (defn broadcast-persist-graph!
   "Receive graph-name (not graph path)
@@ -549,11 +605,15 @@
              (fn [^js event args-js]
                (try
                  (let [message (bean/->clj args-js)]
+                   ;; Be careful with the return values of `handle` defmethods.
+                   ;; Values that are not non-JS objects will cause this
+                   ;; exception -
+                   ;; https://www.electronjs.org/docs/latest/breaking-changes#behavior-changed-sending-non-js-objects-over-ipc-now-throws-an-exception
                    (bean/->js (handle (or (utils/get-win-from-sender event) window) message)))
                  (catch js/Error e
                    (when-not (contains? #{"mkdir" "stat"} (nth args-js 0))
-                     (println "IPC error: " {:event event
-                                             :args args-js}
+                     (.error utils/logger "IPC error: " (str {:event event
+                                                              :args args-js})
                               e))
                    e))))
     #(.removeHandler ipcMain main-channel)))

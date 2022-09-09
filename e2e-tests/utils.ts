@@ -117,7 +117,7 @@ export async function newInnerBlock(page: Page): Promise<Locator> {
 
 export async function newBlock(page: Page): Promise<Locator> {
   let blockNumber = await page.locator('.page-blocks-inner .ls-block').count()
-  const prev = await lastBlock(page)
+  await lastBlock(page)
   await page.press('textarea >> nth=0', 'Enter')
   await page.waitForSelector(`.page-blocks-inner .ls-block >> nth=${blockNumber} >> textarea`, { state: 'visible' })
   return page.locator('textarea >> nth=0')
@@ -171,7 +171,7 @@ export async function openLeftSidebar(page: Page): Promise<void> {
 
 export async function loadLocalGraph(page: Page, path: string): Promise<void> {
   await setMockedOpenDirPath(page, path);
-  
+
   const onboardingOpenButton = page.locator('strong:has-text("Choose a folder")')
 
   if (await onboardingOpenButton.isVisible()) {
@@ -183,12 +183,12 @@ export async function loadLocalGraph(page: Page, path: string): Promise<void> {
       await page.click('#left-menu.button')
       await expect(sidebar).toHaveClass(/is-open/)
     }
-    
+
     await page.click('#left-sidebar #repo-switch');
     await page.waitForSelector('#left-sidebar .dropdown-wrapper >> text="Add new graph"',
-    { state: 'visible', timeout: 5000 })
+      { state: 'visible', timeout: 5000 })
     await page.click('text=Add new graph')
-    await page.waitForSelector('strong:has-text("Choose a folder")',{ state: 'visible', timeout: 5000 })
+    await page.waitForSelector('strong:has-text("Choose a folder")', { state: 'visible', timeout: 5000 })
 
     expect(page.locator('#repo-name')).toHaveText(pathlib.basename(path))
   }
@@ -210,9 +210,12 @@ export async function loadLocalGraph(page: Page, path: string): Promise<void> {
 
   // If there is an error notification from a previous test graph being deleted,
   // close it first so it doesn't cover up the UI
-  while (await (page.locator('.notification-close-button').first()?.isVisible())) {
-    await page.click('.notification-close-button')
+  let locator = page.locator('.notification-close-button').first()
+  while (await locator?.isVisible()) {
+    await locator.click()
     await page.waitForTimeout(250)
+
+    expect(locator.isVisible()).resolves.toBe(false)
   }
 
   console.log('Graph loaded for ' + path)
@@ -243,7 +246,7 @@ export function systemModifier(shortcut: string): string {
   }
 }
 
-export async function captureConsoleWithPrefix(page: Page, prefix: string, timeout: number=3000): Promise<string> {
+export async function captureConsoleWithPrefix(page: Page, prefix: string, timeout: number = 3000): Promise<string> {
   return new Promise((resolve, reject) => {
     let console_handler = (msg: ConsoleMessage) => {
       let text = msg.text()
@@ -261,12 +264,12 @@ export async function queryPermission(page: Page, permission: PermissionName): P
   // Check if WebAPI clipboard supported
   return await page.evaluate(async (eval_permission: PermissionName): Promise<boolean> => {
     if (typeof navigator.permissions == "undefined")
-        return Promise.resolve(false);
+      return Promise.resolve(false);
     return navigator.permissions.query({
-      name: eval_permission 
+      name: eval_permission
     }).then((result: PermissionStatus): boolean => {
       return (result.state == "granted" || result.state == "prompt")
-   })
+    })
   }, permission)
 }
 

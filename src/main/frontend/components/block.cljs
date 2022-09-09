@@ -71,6 +71,7 @@
             [promesa.core :as p]
             [reitit.frontend.easy :as rfe]
             [rum.core :as rum]
+            [frontend.handler.file-sync :as file-sync]
             [clojure.set :as set]
             [shadow.loader :as loader]))
 
@@ -180,6 +181,95 @@
                 parts (remove #(string/blank? %) parts)]
             (string/join "/" (reverse parts))))))))
 
+(rum/defcs asset-loader
+  < rum/reactive
+  (rum/local nil ::exist?)
+  (rum/local false ::loading?)
+  {:will-mount  (fn [state]
+                  (let [src (first (:rum/args state))]
+                    (if (and (gp-config/local-protocol-asset? src)
+                             (file-sync/current-graph-sync-on?))
+                      (let [*exist? (::exist? state)
+                            asset-path (gp-config/remove-asset-protocol src)]
+                        (if (string/blank? asset-path)
+                          (reset! *exist? false)
+                          (-> (fs/file-exists? "" asset-path)
+                              (p/then
+                               (fn [exist?]
+                                 (reset! *exist? (boolean exist?))))))
+                        (assoc state ::asset-path asset-path ::asset-file? true))
+                      state)))
+   :will-update (fn [state]
+                  (let [src (first (:rum/args state))
+                        asset-file? (boolean (::asset-file? state))
+                        sync-on? (file-sync/current-graph-sync-on?)
+                        *loading? (::loading? state)
+                        *exist? (::exist? state)]
+                    (when (and sync-on? asset-file? (false? @*exist?))
+                      (let [sync-state (state/sub [:file-sync/sync-state (state/get-current-repo)])
+                            _downloading-files (:current-remote->local-files sync-state)
+                            contain-url? (and (seq _downloading-files)
+                                              (some #(string/ends-with? src %) _downloading-files))]
+                        (cond
+                          (and (not @*loading?) contain-url?)
+                          (reset! *loading? true)
+
+                          (and @*loading? (not contain-url?))
+                          (do
+                            (reset! *exist? true)
+                            (reset! *loading? false))))))
+                  state)}
+  [state src content-fn]
+  (let [_ (state/sub [:file-sync/sync-state (state/get-current-repo)])
+        exist? @(::exist? state)
+        loading? @(::loading? state)
+        asset-file? (::asset-file? state)
+        sync-enabled? (boolean (file-sync/current-graph-sync-on?))
+        ext (keyword (util/get-file-ext src))
+        img? (contains? (gp-config/img-formats) ext)
+        audio? (contains? config/audio-formats ext)
+        type (cond img? "image"
+                   audio? "audio"
+                   :else "asset")]
+
+    (if (not sync-enabled?)
+      (content-fn)
+      (if (and asset-file? (or loading? (nil? exist?)))
+        [:p.text-sm.opacity-50 (ui/loading (util/format "Syncing %s ..." type))]
+        (if (or (not asset-file?)
+                (and exist? (not loading?)))
+          (content-fn)
+          [:p.text-red-500.text-xs [:small.opacity-80
+                                    (util/format "%s not found!" (string/capitalize type))]])))))
+
+(defn open-lightbox
+  [e]
+  (let [images (js/document.querySelectorAll ".asset-container img")
+        images (to-array images)
+        images (if-not (= (count images) 1)
+                 (let [^js _image (.closest (.-target e) ".asset-container")
+                       image (. _image querySelector "img")]
+                   (->> images
+                        (sort-by (juxt #(.-y %) #(.-x %)))
+                        (split-with (complement #{image}))
+                        reverse
+                        (apply concat)))
+                 images)
+        images (for [^js it images] {:src (.-src it)
+                                     :w (.-naturalWidth it)
+                                     :h (.-naturalHeight it)})]
+
+    (when (seq images)
+      (lightbox/preview-images! images))))
+
+(defn copy-image-to-clipboard
+  [src]
+  (-> (js/fetch src)
+      (.then (fn [data]
+               (-> (.blob data)
+                   (.then (fn [blob]
+                            (js/navigator.clipboard.write (clj->js [(js/ClipboardItem. (clj->js {(.-type blob) blob}))])))))))))
+
 (defonce *resizing-image? (atom false))
 (rum/defcs resizable-image <
   (rum/local nil ::size)
@@ -192,25 +282,25 @@
      (ui/resize-consumer
       (if-not (mobile-util/native-ios?)
         (cond->
-            {:className "resize image-resize"
-             :onSizeChanged (fn [value]
-                              (when (and (not @*resizing-image?)
-                                         (some? @size)
-                                         (not= value @size))
-                                (reset! *resizing-image? true))
-                              (reset! size value))
-             :onMouseUp (fn []
-                          (when (and @size @*resizing-image?)
-                            (when-let [block-id (:block/uuid config)]
-                              (let [size (bean/->clj @size)]
-                                (editor-handler/resize-image! block-id metadata full_text size))))
-                          (when @*resizing-image?
+         {:className "resize image-resize"
+          :onSizeChanged (fn [value]
+                           (when (and (not @*resizing-image?)
+                                      (some? @size)
+                                      (not= value @size))
+                             (reset! *resizing-image? true))
+                           (reset! size value))
+          :onMouseUp (fn []
+                       (when (and @size @*resizing-image?)
+                         (when-let [block-id (:block/uuid config)]
+                           (let [size (bean/->clj @size)]
+                             (editor-handler/resize-image! block-id metadata full_text size))))
+                       (when @*resizing-image?
                             ;; TODO: need a better way to prevent the clicking to edit current block
-                            (js/setTimeout #(reset! *resizing-image? false) 200)))
-             :onClick (fn [e]
-                        (when @*resizing-image? (util/stop e)))}
-            (and (:width metadata) (not (util/mobile?)))
-            (assoc :style {:width (:width metadata)}))
+                         (js/setTimeout #(reset! *resizing-image? false) 200)))
+          :onClick (fn [e]
+                     (when @*resizing-image? (util/stop e)))}
+          (and (:width metadata) (not (util/mobile?)))
+          (assoc :style {:width (:width metadata)}))
         {})
       [:div.asset-container {:key "resize-asset-container"}
        [:img.rounded-sm.shadow-xl.relative
@@ -219,51 +309,62 @@
           :src     src
           :title   title}
          metadata)]
-       [:span.ctl
-        [:a.delete
-         {:title "Delete this image"
-          :on-click
-          (fn [e]
-            (when-let [block-id (:block/uuid config)]
-              (let [confirm-fn (ui/make-confirm-modal
-                                {:title         (t :asset/confirm-delete (.toLocaleLowerCase (t :text/image)))
-                                 :sub-title     (if local? :asset/physical-delete "")
-                                 :sub-checkbox? local?
-                                 :on-confirm    (fn [_e {:keys [close-fn sub-selected]}]
-                                                  (close-fn)
-                                                  (editor-handler/delete-asset-of-block!
-                                                   {:block-id    block-id
-                                                    :local?      local?
-                                                    :delete-local? (and sub-selected (first sub-selected))
-                                                    :repo        (state/get-current-repo)
-                                                    :href        src
-                                                    :title       title
-                                                    :full-text   full_text}))})]
-                (state/set-modal! confirm-fn)
-                (util/stop e))))}
-         svg/trash-sm]
+       [:.asset-overlay]
+       (let [image-src (string/replace src #"^assets://" "")]
+         [:.asset-action-bar {:aria-hidden "true"}
+          (when (util/electron?)
+            [:button.asset-action-btn.text-left
+             {:title (t (if local? :asset/show-in-folder :asset/open-in-browser))
+              :tabIndex "-1"
+              :on-mouse-down util/stop
+              :on-click (fn [e]
+                          (util/stop e)
+                          (if local?
+                            (js/window.apis.showItemInFolder image-src)
+                            (js/window.apis.openExternal image-src)))}
+             image-src])
+          [:.flex
+           [:button.asset-action-btn
+            {:title (t :asset/delete)
+             :tabIndex "-1"
+             :on-mouse-down util/stop
+             :on-click
+             (fn [e]
+               (when-let [block-id (:block/uuid config)]
+                 (let [confirm-fn (ui/make-confirm-modal
+                                   {:title         (t :asset/confirm-delete (.toLocaleLowerCase (t :text/image)))
+                                    :sub-title     (if local? :asset/physical-delete "")
+                                    :sub-checkbox? local?
+                                    :on-confirm    (fn [_e {:keys [close-fn sub-selected]}]
+                                                     (close-fn)
+                                                     (editor-handler/delete-asset-of-block!
+                                                      {:block-id    block-id
+                                                       :local?      local?
+                                                       :delete-local? (and sub-selected (first sub-selected))
+                                                       :repo        (state/get-current-repo)
+                                                       :href        src
+                                                       :title       title
+                                                       :full-text   full_text}))})]
+                   (util/stop e)
+                   (state/set-modal! confirm-fn))))}
+            (ui/icon "trash")]
 
-        [:a.delete.ml-1
-         {:title    "maximize image"
-          :on-click (fn [^js e] (let [images (js/document.querySelectorAll ".asset-container img")
-                                      images (to-array images)
-                                      images (if-not (= (count images) 1)
-                                               (let [^js _image (.closest (.-target e) ".asset-container")
-                                                     image (. _image querySelector "img")]
-                                                 (->> images
-                                                      (sort-by (juxt #(.-y %) #(.-x %)))
-                                                      (split-with (complement #{image}))
-                                                      reverse
-                                                      (apply concat)))
-                                               images)
-                                      images (for [^js it images] {:src (.-src it)
-                                                                   :w (.-naturalWidth it)
-                                                                   :h (.-naturalHeight it)})]
+           [:button.asset-action-btn
+            {:title (t :asset/copy)
+             :tabIndex "-1"
+             :on-mouse-down util/stop
+             :on-click (fn [e]
+                         (util/stop e)
+                         (copy-image-to-clipboard image-src))}
+            (ui/icon "copy")]
 
-                                  (when (seq images)
-                                    (lightbox/preview-images! images))))}
+           [:button.asset-action-btn
+            {:title (t :asset/maximize)
+             :tabIndex "-1"
+             :on-mouse-down util/stop
+             :on-click open-lightbox}
 
-         (svg/maximize)]]]))))
+            (ui/icon "maximize")]]])]))))
 
 (rum/defc audio-cp [src]
   [:audio {:src src
@@ -292,10 +393,12 @@
 
         (cond
           (contains? config/audio-formats ext)
-          (audio-cp @src)
+          (asset-loader @src
+                        #(audio-cp @src))
 
           (contains? (gp-config/img-formats) ext)
-          (resizable-image config title @src metadata full_text true)
+          (asset-loader @src
+                        #(resizable-image config title @src metadata full_text true))
 
           (contains? (gp-config/text-formats) ext)
           [:a.asset-ref.is-plaintext {:href (rfe/href :file {:path path})
@@ -451,14 +554,14 @@
   [config page-name-in-block page-name redirect-page-name page-entity contents-page? children html-export? label]
   (let [tag? (:tag? config)]
     [:a
-     {:tabindex "0"
+     {:tabIndex "0"
       :class (cond-> (if tag? "tag" "page-ref")
                (:property? config)
                (str " page-property-key block-property"))
       :data-ref page-name
       :on-mouse-down (fn [e] (open-page-ref e page-name redirect-page-name page-name-in-block contents-page?))
-      :on-key-up (fn [e] ((when (= (.-key e) "Enter") 
-                           (open-page-ref e page-name redirect-page-name page-name-in-block contents-page?))))}
+      :on-key-up (fn [e] (when (and e (= (.-key e) "Enter"))
+                           (open-page-ref e page-name redirect-page-name page-name-in-block contents-page?)))}
 
      (if (and (coll? children) (seq children))
        (for [child children]
@@ -1082,7 +1185,7 @@
 ;;;; Macro component render functions
 (defn- macro-query-cp
   [config arguments]
-  [:div.dsl-query.overflow-x-hidden.pr-3.sm:pr-0
+  [:div.dsl-query.pr-3.sm:pr-0
    (let [query (->> (string/join ", " arguments)
                     (string/trim))]
      (when-not (string/blank? query)
@@ -1644,8 +1747,7 @@
                            [(str class " checked") true])]
     (when class
       (ui/checkbox {:class class
-                    :style {:margin-top -2
-                            :margin-right 5}
+                    :style {:margin-right 5}
                     :checked checked?
                     :on-mouse-down (fn [e]
                                      (util/stop-propagation e))
@@ -1815,7 +1917,9 @@
         user-config (state/get-config)
         ;; In this mode and when value is a set of refs, display full property text
         ;; because :block/properties value only contains refs but user wants to see text
-        v (if (and (:rich-property-values? user-config) (coll? value))
+        v (if (and (:rich-property-values? user-config)
+                   (coll? value)
+                   (not (contains? gp-property/editable-linkable-built-in-properties k)))
             (gp-property/property-value-from-content (name k) (:block/content block))
             value)
         property-pages-enabled? (contains? #{true nil} (:property-pages/enabled? user-config))]
@@ -1908,10 +2012,10 @@
   (when (seq invalid-properties)
     [:div.invalid-properties.mb-2
      [:div.warning {:title "Invalid properties"}
-      "Invalid property keys: "
+      "Invalid property names: "
       (for [p invalid-properties]
         [:button.p-1.mr-2 p])]
-     [:code "Property key begins with a non-numeric character and can contain alphanumeric characters and . * + ! - _ ? $ % & = < >. If -, + or . are the first character, the second character (if any) must be non-numeric."]]))
+     [:code "Property name begins with a non-numeric character and can contain alphanumeric characters and . * + ! - _ ? $ % & = < >. If -, + or . are the first character, the second character (if any) must be non-numeric."]]))
 
 (rum/defcs timestamp-cp < rum/reactive
   (rum/local false ::show?)
@@ -1967,55 +2071,56 @@
    (dom/closest target ".query-table")))
 
 (defn- block-content-on-mouse-down
-  [e block block-id _content edit-input-id]
-  (.stopPropagation e)
-  (let [target (gobj/get e "target")
-        button (gobj/get e "buttons")
-        shift? (gobj/get e "shiftKey")
-        meta? (util/meta-key? e)]
-    (if (and meta? (not (state/get-edit-input-id)))
-      (do
-        (util/stop e)
-        (state/conj-selection-block! (gdom/getElement block-id) :down)
-        (when (and block-id (not (state/get-selection-start-block)))
-          (state/set-selection-start-block! block-id)))
-      (when (contains? #{1 0} button)
-        (when-not (target-forbidden-edit? target)
-          (cond
-            (and shift? (state/get-selection-start-block-or-first))
-            (do
-              (util/stop e)
+  [e block block-id content edit-input-id]
+  (when-not (> (count content) (state/block-content-max-length (state/get-current-repo)))
+    (.stopPropagation e)
+    (let [target (gobj/get e "target")
+          button (gobj/get e "buttons")
+          shift? (gobj/get e "shiftKey")
+          meta? (util/meta-key? e)]
+      (if (and meta? (not (state/get-edit-input-id)))
+        (do
+          (util/stop e)
+          (state/conj-selection-block! (gdom/getElement block-id) :down)
+          (when (and block-id (not (state/get-selection-start-block)))
+            (state/set-selection-start-block! block-id)))
+        (when (contains? #{1 0} button)
+          (when-not (target-forbidden-edit? target)
+            (cond
+              (and shift? (state/get-selection-start-block-or-first))
+              (do
+                (util/stop e)
+                (util/clear-selection!)
+                (editor-handler/highlight-selection-area! block-id))
+
+              shift?
               (util/clear-selection!)
-              (editor-handler/highlight-selection-area! block-id))
 
-            shift?
-            (util/clear-selection!)
+              :else
+              (do
+                (editor-handler/clear-selection!)
+                (editor-handler/unhighlight-blocks!)
+                (let [f #(let [block (or (db/pull [:block/uuid (:block/uuid block)]) block)
+                               cursor-range (util/caret-range (gdom/getElement block-id))
+                               {:block/keys [content format]} block
+                               content (->> content
+                                            (property/remove-built-in-properties format)
+                                            (drawer/remove-logbook))]
+                           ;; save current editing block
+                           (let [{:keys [value] :as state} (editor-handler/get-state)]
+                             (editor-handler/save-block! state value))
+                           (state/set-editing!
+                            edit-input-id
+                            content
+                            block
+                            cursor-range
+                            false))]
+                  ;; wait a while for the value of the caret range
+                  (if (util/ios?)
+                    (f)
+                    (js/setTimeout f 5))
 
-            :else
-            (do
-              (editor-handler/clear-selection!)
-              (editor-handler/unhighlight-blocks!)
-              (let [f #(let [block (or (db/pull [:block/uuid (:block/uuid block)]) block)
-                             cursor-range (util/caret-range (gdom/getElement block-id))
-                             {:block/keys [content format]} block
-                             content (->> content
-                                          (property/remove-built-in-properties format)
-                                          (drawer/remove-logbook))]
-                         ;; save current editing block
-                         (let [{:keys [value] :as state} (editor-handler/get-state)]
-                           (editor-handler/save-block! state value))
-                         (state/set-editing!
-                          edit-input-id
-                          content
-                          block
-                          cursor-range
-                          false))]
-                ;; wait a while for the value of the caret range
-                (if (util/ios?)
-                  (f)
-                  (js/setTimeout f 5))
-
-                (when block-id (state/set-selection-start-block! block-id))))))))))
+                  (when block-id (state/set-selection-start-block! block-id)))))))))))
 
 (rum/defc dnd-separator-wrapper < rum/reactive
   [block block-id slide? top? block-content?]
@@ -2097,6 +2202,9 @@
        (merge attrs))
 
      [:<>
+      (when (> (count content) (state/block-content-max-length (state/get-current-repo)))
+        [:div.warning.text-sm
+         "Large block will not be editable or searchable to not slow down the app, please use another editor to edit this block."])
       [:div.flex.flex-row.justify-between.block-content-inner
        [:div.flex-1.w-full
         (cond
@@ -2454,7 +2562,10 @@
         *navigating-block (get state ::navigating-block)
         navigating-block (rum/react *navigating-block)
         navigated? (and (not= (:block/uuid block) navigating-block) navigating-block)
-        block (if (or (and custom-query? (empty? (:block/children block)))
+        block (if (or (and custom-query?
+                           (empty? (:block/children block))
+                           (not (and (:dsl-query? config)
+                                     (string/includes? (:query config) "not"))))
                       navigated?)
                 (let [block (db/pull [:block/uuid navigating-block])
                       blocks (db/get-paginated-blocks repo (:db/id block)
@@ -2555,7 +2666,9 @@
 
       (when @*show-left-menu?
         (block-left-menu config block))
+
       (block-content-or-editor config block edit-input-id block-id heading-level edit?)
+
       (when @*show-right-menu?
         (block-right-menu config block edit?))]
 
@@ -2761,8 +2874,7 @@
 
 (defn built-in-custom-query?
   [title]
-  (let [repo (state/get-current-repo)
-        queries (state/sub [:config repo :default-queries :journals])]
+  (let [queries (get-in (state/sub-config) [:default-queries :journals])]
     (when (seq queries)
       (boolean (some #(= % title) (map :title queries))))))
 
@@ -2838,10 +2950,9 @@
   [state config {:keys [title query view collapsed? children? breadcrumb-show? table-view?] :as q}]
   (let [dsl-query? (:dsl-query? config)
         query-atom (:query-atom state)
-        repo (state/get-current-repo)
         query-time (or (react/get-query-time query)
                        (react/get-query-time q))
-        view-fn (if (keyword? view) (state/sub [:config repo :query/views view]) view)
+        view-fn (if (keyword? view) (get-in (state/sub-config) [:query/views view]) view)
         current-block-uuid (or (:block/uuid (:block config))
                                (:block/uuid config))
         current-block (db/entity [:block/uuid current-block-uuid])
@@ -2949,6 +3060,8 @@
                (and (seq result) (or only-blocks? blocks-grouped-by-page?))
                (->hiccup result (cond-> (assoc config
                                                :custom-query? true
+                                               :dsl-query? dsl-query?
+                                               :query query
                                                :breadcrumb-show? (if (some? breadcrumb-show?)
                                                                    breadcrumb-show?
                                                                    true)

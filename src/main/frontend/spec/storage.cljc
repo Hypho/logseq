@@ -3,7 +3,6 @@
   #?(:cljs (:require [cljs.spec.alpha :as s])
      :default (:require [clojure.spec.alpha :as s])))
 
-(s/def ::db-schema map?)
 (s/def ::ls-right-sidebar-state map?)
 (s/def ::ls-right-sidebar-width string?)
 (s/def ::ls-left-sidebar-open? boolean?)
@@ -36,8 +35,7 @@
 (s/def ::local-storage
   ;; All these keys are optional since we usually only validate one key at a time
   (s/keys
-   :opt-un [::db-schema
-            ::ls-right-sidebar-state
+   :opt-un [::ls-right-sidebar-state
             ::ls-right-sidebar-width
             ::ls-left-sidebar-open?
             :ui/theme
@@ -56,4 +54,5 @@
             :document/mode?
             :ui/shortcut-tooltip?
             :copy/export-block-text-indent-style
-            :copy/export-block-text-remove-options]))
+            :copy/export-block-text-remove-options
+            :file-sync/onboarding-state]))

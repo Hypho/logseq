@@ -119,6 +119,10 @@
  ;; Set this to `true` so that it's the same behaviour as the usual outliner mode.
  :shortcut/doc-mode-enter-for-new-block? false
 
+ ;; Block content larger than `block/content-max-length` will not be searchable
+ ;; or editable for performance.
+ :block/content-max-length 5000
+
  ;; Whether to show command doc on hover
  :ui/show-command-doc? true
 
@@ -229,7 +233,8 @@
  ;; :property-pages/excludelist
 
  ;; Enables property values to contain a mix of tags, page-refs, special
- ;; punctuation and free-form text
+ ;; punctuation and free-form text.
+ ;; Re-index current graph for config to take effect
  ;; :rich-property-values? true
 
  ;; logbook setup
@@ -265,6 +270,10 @@
  ;; :quick-capture-templates
  ;; {:text "[[quick capture]] **{time}**: {text} from {url}"
  ;;  :media "[[quick capture]] **{time}**: {url}"}
+
+ ;; File sync options
+ ;; Ignore these files when syncing, regexp is supported.
+ ;; :file-sync/ignore-files []
 
  ;; dwim (do what I mean) for Enter key when editing.
  ;; Context-awareness of Enter key makes editing more easily

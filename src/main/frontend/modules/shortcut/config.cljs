@@ -252,7 +252,7 @@
    :go/electron-find-in-page       {:binding "mod+f"
                                     :inactive (not (util/electron?))
                                     :fn      #(search-handler/open-find-in-page!)}
-   
+
    :go/electron-jump-to-the-next {:binding ["enter" "mod+g"]
                                   :inactive (not (util/electron?))
                                   :fn      #(search-handler/loop-find-in-page! false)}
@@ -325,6 +325,8 @@
    :go/graph-view                  {:binding "g g"
                                     :fn      route-handler/redirect-to-graph-view!}
 
+   :go/all-graphs                  {:binding "g shift+g"
+                                    :fn      route-handler/redirect-to-all-graphs}
 
    :go/keyboard-shortcuts          {:binding "g s"
                                     :fn      #(route-handler/redirect! {:to :shortcut-setting})}
@@ -534,6 +536,7 @@
                           :go/all-pages
                           :go/flashcards
                           :go/graph-view
+                          :go/all-graphs
                           :go/keyboard-shortcuts
                           :go/tomorrow
                           :go/next-journal
@@ -599,6 +602,7 @@
     :go/journals
     :go/all-pages
     :go/graph-view
+    :go/all-graphs
     :go/flashcards
     :go/tomorrow
     :go/next-journal

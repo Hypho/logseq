@@ -64,10 +64,10 @@
          (:file/path (:block/file page)))))))
 
 (defn- build-title [page]
-  (let [original-name (:block/original-name page)]
-    (if (string/includes? original-name ",")
-      (util/format "\"%s\"" original-name)
-      original-name)))
+  ;; Don't wrap `\"` anymore, as tiitle property is not effected by `,` now
+  ;; The previous extract behavior isn't unwrapping the `'"` either. So no need
+  ;; to maintain the compatibility.
+  (:block/original-name page))
 
 (defn default-properties-block
   ([title format page]
@@ -194,6 +194,7 @@
     (string/join "/" parts)))
 
 (defn rename-file!
+  "emit file-rename events to :file/rename-event-chan"
   [file new-name ok-handler]
   (let [repo (state/get-current-repo)
         file (db/pull (:db/id file))
@@ -203,7 +204,10 @@
     (db/transact! repo [{:db/id (:db/id file)
                          :file/path new-path}])
     (->
-     (p/let [_ (fs/rename! repo old-path new-path)]
+     (p/let [_ (state/offer-file-rename-event-chan! {:repo repo
+                                                     :old-path old-path
+                                                     :new-path new-path})
+             _ (fs/rename! repo old-path new-path)]
        (ok-handler))
      (p/catch (fn [error]
                 (println "file rename failed: " error))))))
@@ -242,10 +246,10 @@
         new-tag (if (re-find #"[\s\t]+" new-name)
                   (util/format "#[[%s]]" new-name)
                   (str "#" new-name))]
-    ;; hash tag parsing rules https://github.com/logseq/mldoc/blob/701243eaf9b4157348f235670718f6ad19ebe7f8/test/test_markdown.ml#L631 
+    ;; hash tag parsing rules https://github.com/logseq/mldoc/blob/701243eaf9b4157348f235670718f6ad19ebe7f8/test/test_markdown.ml#L631
     ;; Safari doesn't support look behind, don't use
     ;; TODO: parse via mldoc
-    (string/replace content 
+    (string/replace content
                     (re-pattern (str "(?i)(^|\\s)(" (util/escape-regex-chars old-tag) ")(?=[,\\.]*($|\\s))"))
                     ;;    case_insense^    ^lhs   ^_grp2                       look_ahead^         ^_grp3
                     (fn [[_match lhs _grp2 _grp3]]
@@ -313,15 +317,17 @@
 (defn unfavorite-page!
   [page-name]
   (when-not (string/blank? page-name)
-    (let [favorites (->> (:favorites (state/get-config))
-                         (remove #(= (string/lower-case %) (string/lower-case page-name)))
-                         (vec))]
-      (config-handler/set-config! :favorites favorites))))
+    (let [old-favorites (:favorites (state/get-config))
+          new-favorites (->> old-favorites
+                             (remove #(= (string/lower-case %) (string/lower-case page-name)))
+                             (vec))]
+      (when-not (= old-favorites new-favorites)
+        (config-handler/set-config! :favorites new-favorites)))))
 
 (defn toggle-favorite! []
   ;; NOTE: in journals or settings, current-page is nil
   (when-let [page-name (state/get-current-page)]
-   (let [favorites  (:favorites (state/sub-graph-config))
+   (let [favorites  (:favorites (state/sub-config))
          favorited? (contains? (set (map string/lower-case favorites))
                                (string/lower-case page-name))]
     (if favorited?
@@ -559,31 +565,32 @@
 
 (defn rename!
   "Accepts unsanitized page names"
-  [old-name new-name]
-  (let [repo          (state/get-current-repo)
-        old-name      (string/trim old-name)
-        new-name      (string/trim new-name)
-        old-page-name (util/page-name-sanity-lc old-name)
-        new-page-name (util/page-name-sanity-lc new-name)
-        name-changed? (not= old-name new-name)]
-    (if (and old-name
-             new-name
-             (not (string/blank? new-name))
-             name-changed?)
-      (do
-        (cond
-          (= old-page-name new-page-name)
-          (rename-page-aux old-name new-name true)
+  ([old-name new-name] (rename! old-name new-name true))
+  ([old-name new-name redirect?]
+    (let [repo          (state/get-current-repo)
+          old-name      (string/trim old-name)
+          new-name      (string/trim new-name)
+          old-page-name (util/page-name-sanity-lc old-name)
+          new-page-name (util/page-name-sanity-lc new-name)
+          name-changed? (not= old-name new-name)]
+      (if (and old-name
+              new-name
+              (not (string/blank? new-name))
+              name-changed?)
+        (do
+          (cond
+            (= old-page-name new-page-name)
+            (rename-page-aux old-name new-name redirect?)
 
-          (db/pull [:block/name new-page-name])
-          (merge-pages! old-page-name new-page-name)
+            (db/pull [:block/name new-page-name])
+            (merge-pages! old-page-name new-page-name)
 
-          :else
-          (rename-namespace-pages! repo old-name new-name))
-        (rename-nested-pages old-name new-name))
-      (when (string/blank? new-name)
-        (notification/show! "Please use a valid name, empty name is not allowed!" :error)))
-    (ui-handler/re-render-root!)))
+            :else
+            (rename-namespace-pages! repo old-name new-name))
+          (rename-nested-pages old-name new-name))
+        (when (string/blank? new-name)
+          (notification/show! "Please use a valid name, empty name is not allowed!" :error)))
+      (ui-handler/re-render-root!))))
 
 (defn- split-col-by-element
   [col element]
@@ -665,11 +672,13 @@
           (contains? (set templates) (string/lower-case title)))))))
 
 (defn ls-dir-files!
-  [ok-handler]
-  (web-nfs/ls-dir-files-with-handler!
-   (fn []
-     (init-commands!)
-     (when ok-handler (ok-handler)))))
+  ([ok-handler] (ls-dir-files! ok-handler nil))
+  ([ok-handler opts]
+   (web-nfs/ls-dir-files-with-handler!
+     (fn [e]
+       (init-commands!)
+       (when ok-handler (ok-handler e)))
+     opts)))
 
 (defn get-all-pages
   [repo]

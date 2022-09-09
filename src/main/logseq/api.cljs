@@ -41,14 +41,19 @@
 
 ;; helpers
 (defn- normalize-keyword-for-json
-  [input]
-  (when input
-    (walk/postwalk
+  ([input] (normalize-keyword-for-json input true))
+  ([input camel-case?]
+   (when input
+     (walk/postwalk
       (fn [a]
         (cond
-          (keyword? a) (csk/->camelCase (name a))
+          (keyword? a)
+          (cond-> (name a)  
+            camel-case? 
+            (csk/->camelCase))
+
           (uuid? a) (str a)
-          :else a)) input)))
+          :else a)) input))))
 
 (defn- parse-hiccup-ui
   [input]
@@ -108,7 +113,7 @@
 
 (def ^:export get_current_graph_configs
   (fn []
-    (some-> (get (:config @state/state) (state/get-current-repo))
+    (some-> (state/get-config)
             (normalize-keyword-for-json)
             (bean/->js))))
 
@@ -711,6 +716,9 @@
         (insert_block src content (bean/->js opts))))))
 
 ;; plugins
+(defn ^:export validate_external_plugins [urls]
+  (ipc/ipc :validateUserExternalPlugins urls))
+
 (def ^:export __install_plugin
   (fn [^js manifest]
     (when-let [{:keys [repo id] :as mft} (bean/->clj manifest)]
@@ -732,7 +740,7 @@
       (let [query (cljs.reader/read-string query)
             resolved-inputs (map (comp query-react/resolve-input cljs.reader/read-string) inputs)
             result (apply d/q query db resolved-inputs)]
-        (clj->js result)))))
+        (bean/->js (normalize-keyword-for-json result false))))))
 
 (defn ^:export custom_query
   [query-string]

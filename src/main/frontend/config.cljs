@@ -1,12 +1,12 @@
 (ns frontend.config
   (:require [clojure.set :as set]
             [clojure.string :as string]
+            [frontend.mobile.util :as mobile-util]
             [frontend.state :as state]
             [frontend.util :as util]
-            [shadow.resource :as rc]
-            [logseq.graph-parser.util :as gp-util]
             [logseq.graph-parser.config :as gp-config]
-            [frontend.mobile.util :as mobile-util]))
+            [logseq.graph-parser.util :as gp-util]
+            [shadow.resource :as rc]))
 
 (goog-define DEV-RELEASE false)
 (defonce dev-release? DEV-RELEASE)
@@ -19,23 +19,22 @@
 
 (def test? false)
 
-;; prod env
-;; (goog-define FILE-SYNC-PROD? true)
-;; (goog-define LOGIN-URL
-;;              "https://logseq.auth.us-east-1.amazoncognito.com/login?client_id=7ns5v1pu8nrbs04rvdg67u4a7c&response_type=code&scope=email+openid+phone&redirect_uri=logseq%3A%2F%2Fauth-callback")
-;; (goog-define API-DOMAIN "api-prod.logseq.com")
-;; (goog-define WS-URL "wss://b2rp13onu2.execute-api.us-east-1.amazonaws.com/production?graphuuid=%s")
+(goog-define ENABLE-FILE-SYNC-PRODUCTION false)
 
-;; dev env
-(goog-define FILE-SYNC-PROD? false)
-(goog-define LOGIN-URL
-             "https://logseq-test2.auth.us-east-2.amazoncognito.com/login?client_id=3ji1a0059hspovjq5fhed3uil8&response_type=code&scope=email+openid+phone&redirect_uri=logseq%3A%2F%2Fauth-callback")
-(goog-define API-DOMAIN "api.logseq.com")
-(goog-define WS-URL "wss://og96xf1si7.execute-api.us-east-2.amazonaws.com/production?graphuuid=%s")
+(if ENABLE-FILE-SYNC-PRODUCTION
+  (do (def FILE-SYNC-PROD? true)
+      (def LOGIN-URL
+        "https://logseq-prod.auth.us-east-1.amazoncognito.com/login?client_id=3c7np6bjtb4r1k1bi9i049ops5&response_type=code&scope=email+openid+phone&redirect_uri=logseq%3A%2F%2Fauth-callback")
+      (def API-DOMAIN "api.logseq.com")
+      (def WS-URL "wss://ws.logseq.com/file-sync?graphuuid=%s"))
+
+  (do (def FILE-SYNC-PROD? false)
+      (def LOGIN-URL
+        "https://logseq-test2.auth.us-east-2.amazoncognito.com/login?client_id=3ji1a0059hspovjq5fhed3uil8&response_type=code&scope=email+openid+phone&redirect_uri=logseq%3A%2F%2Fauth-callback")
+      (def API-DOMAIN "api-dev.logseq.com")
+      (def WS-URL "wss://ws-dev.logseq.com/file-sync?graphuuid=%s")))
 
 ;; feature flags
-(goog-define ENABLE-FILE-SYNC false)
-(defonce enable-file-sync? (or ENABLE-FILE-SYNC dev?)) ;; always enable file-sync when dev
 
 (goog-define ENABLE-PLUGINS true)
 (defonce enable-plugins? ENABLE-PLUGINS)
@@ -244,10 +243,11 @@
 (defonce local-repo "local")
 
 (defn demo-graph?
+  "Demo graph or nil graph?"
   ([]
    (demo-graph? (state/get-current-repo)))
   ([graph]
-   (= graph local-repo)))
+   (or (nil? graph) (= graph local-repo))))
 
 (defonce recycle-dir ".recycle")
 (def config-file "config.edn")
@@ -258,6 +258,10 @@
 (def pages-metadata-file "pages-metadata.edn")
 
 (def config-default-content (rc/inline "config.edn"))
+
+;; Desktop only as other platforms requires better understanding of their
+;; multi-graph workflows and optimal place for a "global" dir
+(def global-config-enabled? util/electron?)
 
 (defonce idb-db-prefix "logseq-db/")
 (defonce local-db-prefix "logseq_local_")
@@ -297,6 +301,25 @@
     (str "/"
          (->> (take-last 2 (string/split repo-url #"/"))
               (string/join "_")))))
+
+(defn get-string-repo-dir
+  [repo-dir]
+  (if (mobile-util/native-ios?)
+    (str (if (mobile-util/iCloud-container-path? repo-dir)
+           "iCloud"
+           (cond (mobile-util/native-iphone?)
+                 "On My iPhone"
+
+                 (mobile-util/native-ipad?)
+                 "On My iPad"
+
+                 :else
+                 "Local"))
+         (->> (string/split repo-dir "Documents/")
+              last
+              js/decodeURIComponent
+              (str "/" (string/capitalize app-name) "/")))
+    (get-repo-dir repo-dir)))
 
 (defn get-repo-path
   [repo-url path]
@@ -340,17 +363,18 @@
                  relative-path)]
       (and (not-empty path) (gp-util/path-normalize path)))))
 
+;; NOTE: js/encodeURIComponent cannot be used here
 (defn get-page-file-path
   "Get the path to the page file for the given page. This is used when creating new files."
   [repo-url sub-dir page-name ext]
   (let [page-basename (if (mobile-util/native-platform?)
-                        (util/url-encode page-name)
+                        (js/encodeURI page-name)
                         page-name)]
     (get-file-path repo-url (str sub-dir "/" page-basename "." ext))))
 
-(defn get-config-path
+(defn get-repo-config-path
   ([]
-   (get-config-path (state/get-current-repo)))
+   (get-repo-config-path (state/get-current-repo)))
   ([repo]
    (when repo
      (get-file-path repo (str app-name "/" config-file)))))
@@ -405,4 +429,4 @@
 
 (defn get-block-hidden-properties
   []
-  (get-in @state/state [:config (state/get-current-repo) :block-hidden-properties]))
+  (:block-hidden-properties (state/get-config)))

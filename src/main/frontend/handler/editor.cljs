@@ -613,8 +613,13 @@
             (when edit-block?
               (if (and replace-empty-target?
                        (string/blank? (:block/content last-block)))
-                (js/setTimeout #(edit-block! last-block :max (:block/uuid last-block)) 10)
-                (js/setTimeout #(edit-block! new-block :max (:block/uuid new-block)) 10)))
+                ;; 20ms of waiting for DOM to load the block, to avoid race condition. 
+                ;; It's ensuring good response under M1 pro
+                ;; Used to be 10ms before, but is causing occasional failure on M1 pro with a full page of blocks,
+                ;; or failing E2E with a small number of blocks.
+                ;; Should be related to the # of elements in page
+                (js/setTimeout #(edit-block! last-block :max (:block/uuid last-block)) 20)
+                (js/setTimeout #(edit-block! new-block :max (:block/uuid new-block)) 20)))
             new-block))))))
 
 (defn insert-first-page-block-if-not-exists!
@@ -2720,9 +2725,15 @@
         (do (util/stop e)
             (autopair input-id "(" format nil))
 
+        ;; If you type `xyz`, the last backtick should close the first and not add another autopair
+        ;; If you type several backticks in a row, each one should autopair to accommodate multiline code (```)        
         (contains? (set (keys autopair-map)) key)
-        (do (util/stop e)
-            (autopair input-id key format nil))
+        (let [curr (get-current-input-char input)
+                  prev (util/nth-safe value (dec pos))]
+            (util/stop e) 
+            (if (and (= key "`") (= "`" curr) (not= "`" prev))
+              (cursor/move-cursor-forward input)
+              (autopair input-id key format nil)))
 
         (and hashtag? (or (zero? pos) (re-matches #"\s" (get value (dec pos)))))
         (do
