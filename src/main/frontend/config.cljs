@@ -1,4 +1,5 @@
 (ns frontend.config
+  "App config and fns built on top of configuration"
   (:require [clojure.set :as set]
             [clojure.string :as string]
             [frontend.mobile.util :as mobile-util]
@@ -231,6 +232,7 @@
 
 (defonce default-journals-directory "journals")
 (defonce default-pages-directory "pages")
+(defonce default-whiteboards-directory "whiteboards")
 
 (defn get-pages-directory
   []
@@ -239,6 +241,10 @@
 (defn get-journals-directory
   []
   (or (state/get-journals-directory) default-journals-directory))
+
+(defn get-whiteboards-directory
+  []
+  (or (state/get-whiteboards-directory) default-whiteboards-directory))
 
 (defonce local-repo "local")
 
@@ -418,6 +424,12 @@
 
     (string/replace
      source "../assets" (util/format "%s://%s/assets" protocol (get-repo-dir (state/get-current-repo))))))
+
+(defn get-current-repo-assets-root
+  []
+  (when-let [repo-root (and (local-db? (state/get-current-repo))
+                            (get-repo-dir (state/get-current-repo)))]
+    (util/node-path.join repo-root "assets")))
 
 (defn get-custom-js-path
   ([]

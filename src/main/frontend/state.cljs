@@ -1,20 +1,22 @@
 (ns frontend.state
+  "Provides main application state, fns associated to set and state based rum
+  cursors"
   (:require [cljs-bean.core :as bean]
             [cljs.core.async :as async]
-            [clojure.string :as string]
             [cljs.spec.alpha :as s]
+            [clojure.string :as string]
             [dommy.core :as dom]
-            [medley.core :as medley]
             [electron.ipc :as ipc]
+            [frontend.mobile.util :as mobile-util]
             [frontend.storage :as storage]
             [frontend.util :as util]
             [frontend.util.cursor :as cursor]
             [goog.dom :as gdom]
             [goog.object :as gobj]
-            [promesa.core :as p]
-            [rum.core :as rum]
             [logseq.graph-parser.config :as gp-config]
-            [frontend.mobile.util :as mobile-util]))
+            [medley.core :as medley]
+            [promesa.core :as p]
+            [rum.core :as rum]))
 
 ;; Stores main application state
 (defonce ^:large-vars/data-var state
@@ -231,19 +233,25 @@
 
      ;; file-sync
      :file-sync/jstour-inst                   nil
-     :file-sync/remote-graphs               {:loading false :graphs nil}
-     :file-sync/sync-manager                nil
-     :file-sync/sync-state-manager          nil
-     :file-sync/sync-state                  nil
-     :file-sync/sync-uploading-files        nil
-     :file-sync/sync-downloading-files      nil
      :file-sync/onboarding-state            (or (storage/get :file-sync/onboarding-state)
                                                 {:welcome false})
+     :file-sync/remote-graphs               {:loading false :graphs nil}
+     :file-sync/set-remote-graph-password-result {}
+
+     ;; graph-uuid -> {:graphs-txid {}
+     ;;                :file-sync/sync-manager {}
+     ;;                :file-sync/sync-state {}
+     ;;                ;; {file-path -> payload}
+     ;;                :file-sync/progress {}
+     ;;                :file-sync/start-time {}
+     ;;                :file-sync/last-synced-at {}}
+     :file-sync/graph-state                 {:current-graph-uuid nil
+                                             ;; graph-uuid -> ...
+                                             }
 
      :encryption/graph-parsing?             false
 
      :ui/loading?                           {}
-     :file-sync/set-remote-graph-password-result {}
      :feature/enable-sync?                  (storage/get :logseq-sync-enabled)
 
      :file/rename-event-chan                (async/chan 100)
@@ -282,7 +290,10 @@
 (def default-config
   "Default config for a repo-specific, user config"
   {:feature/enable-search-remove-accents? true
-   :default-arweave-gateway "https://arweave.net"})
+   :default-arweave-gateway "https://arweave.net"
+
+   ;; For flushing the settings of old versions. Don't bump this value.
+   :file/name-format :legacy})
 
 ;; State that most user config is dependent on
 (declare get-current-repo)
@@ -399,6 +410,13 @@ should be done through this fn in order to get global config and config defaults
       (:journals-directory (get-config repo)))
     "journals"))
 
+(defn get-whiteboards-directory
+  []
+  (or
+   (when-let [repo (get-current-repo)]
+     (:whiteboards-directory (get-config repo)))
+   "whiteboards"))
+
 (defn org-mode-file-link?
   [repo]
   (:org-mode/insert-file-link? (get-config repo)))
@@ -425,11 +443,10 @@ should be done through this fn in order to get global config and config defaults
     "LATER"
     "TODO"))
 
-(defn page-name-order
-  "Decide whether to use file name or :title as page name. If it returns \"file\", use the file
-  name unless it is missing."
-  []
-  (:page-name-order (get-config)))
+(defn get-filename-format
+  ([] (get-filename-format (get-current-repo)))
+  ([repo]
+   (:file/name-format (get-config repo))))
 
 (defn get-date-formatter
   []
@@ -535,6 +552,15 @@ Similar to re-frame subscriptions"
   []
   (sub :feature/enable-sync?))
 
+(defn enable-whiteboards?
+  ([]
+   (enable-whiteboards? (get-current-repo)))
+  ([repo]
+   (and
+    (util/electron?)
+    ((resolve 'frontend.handler.user/alpha-user?)) ;; using resolve to avoid circular dependency
+    (:feature/enable-whiteboards? (sub-config repo)))))
+
 (defn export-heading-to-list?
   []
   (not (false? (:export/heading-to-list? (sub-config)))))
@@ -581,7 +607,7 @@ Similar to re-frame subscriptions"
 
 (defn block-content-max-length
   [repo]
-  (or (:block/content-max-length (sub-config repo)) 5000))
+  (or (:block/content-max-length (sub-config repo)) 10000))
 
 (defn mobile?
   []
@@ -621,13 +647,15 @@ Similar to re-frame subscriptions"
   [path value]
   (if (vector? path)
     (swap! state assoc-in path value)
-    (swap! state assoc path value)))
+    (swap! state assoc path value))
+  nil)
 
 (defn update-state!
   [path f]
   (if (vector? path)
     (swap! state update-in path f)
-    (swap! state update path f)))
+    (swap! state update path f))
+  nil)
 
 ;; State getters and setters
 ;; =========================
@@ -716,9 +744,8 @@ Similar to re-frame subscriptions"
   [repo]
   (swap! state update-in [:me :repos]
          (fn [repos]
-           (->> (remove #(= (:url repo)
-                            (:url %))
-                        repos)
+           (->> (remove #(or (= (:url repo) (:url %))
+                             (= (:GraphUUID repo) (:GraphUUID %))) repos)
                 (util/distinct-by :url)))))
 
 (defn set-timestamp-block!
@@ -1311,12 +1338,12 @@ Similar to re-frame subscriptions"
 
 (defn set-config!
   [repo-url value]
-  (set-state! [:config repo-url] value))
+  (when value (set-state! [:config repo-url] value)))
 
 (defn set-global-config!
   [value]
   ;; Placed under :config so cursors can work seamlessly
-  (set-config! ::global-config value))
+  (when value (set-config! ::global-config value)))
 
 (defn get-wide-mode?
   []
@@ -1380,6 +1407,15 @@ Similar to re-frame subscriptions"
         (set-state! [:plugin/installed-hooks hook-or-all] (disj coll pid))))
     true))
 
+(defn active-tldraw-app
+  []
+  ^js js/window.tln)
+
+(defn tldraw-editing-logseq-block?
+  []
+  (when-let [app (active-tldraw-app)]
+    (and (= 1 (.. app -selectedShapesArray -length))
+         (= (.. app -editingShape) (.. app -selectedShapesArray (at 0))))))
 
 (defn set-graph-syncing?
   [value]
@@ -1429,11 +1465,32 @@ Similar to re-frame subscriptions"
            :or {diff 1000}}]
   (when repo
     (or
-      (when-let [last-time (get-in @state [:editor/last-input-time repo])]
-        (let [now (util/time-ms)]
-          (>= (- now last-time) diff)))
-      ;; not in editing mode
-      (not (get-edit-input-id)))))
+     (when-let [last-time (get-in @state [:editor/last-input-time repo])]
+       (let [now (util/time-ms)]
+         (>= (- now last-time) diff)))
+     ;; not in editing mode
+     ;; Is this a good idea to put whiteboard check here?
+     (not (get-edit-input-id)))))
+
+(defn whiteboard-page-idle?
+  "Check if whiteboard page is idle.
+   - when current tool is select and idle
+     - and whiteboard page is updated longer than 1000 seconds
+   - when current tool is other tool and idle
+     - and whiteboard page is updated longer than 3000 seconds"
+  [repo whiteboard-page & {:keys [select-idle-ms tool-idle-ms]
+                           :or {select-idle-ms 1000
+                                tool-idle-ms 3000}}]
+  (when repo
+    (if-let [tldraw-app (active-tldraw-app)]
+      (let [last-time (:block/updated-at whiteboard-page)
+            now (util/time-ms)
+            ellapsed (- now last-time)
+            select-idle (.. tldraw-app (isIn "select.idle"))
+            tool-idle (.. tldraw-app -selectedTool (isIn "idle"))]
+        (or (and select-idle (>= ellapsed select-idle-ms))
+            (and (not select-idle) tool-idle (>= ellapsed tool-idle-ms))))
+      true)))
 
 (defn set-nfs-refreshing!
   [value]
@@ -1755,17 +1812,41 @@ Similar to re-frame subscriptions"
 (defn get-auth-refresh-token []
   (:auth/refresh-token @state))
 
-(defn set-file-sync-manager [v]
-  (set-state! :file-sync/sync-manager v))
-(defn set-file-sync-state [graph v]
+(defn set-file-sync-manager [graph-uuid v]
+  (when (and graph-uuid v)
+    (set-state! [:file-sync/graph-state graph-uuid :file-sync/sync-manager] v)))
+
+(defn get-file-sync-manager [graph-uuid]
+  (get-in @state [:file-sync/graph-state graph-uuid :file-sync/sync-manager]))
+
+(defn clear-file-sync-state! [graph-uuid]
+  (set-state! [:file-sync/graph-state graph-uuid] nil))
+
+(defn clear-file-sync-progress! [graph-uuid]
+  (set-state! [:file-sync/graph-state
+               graph-uuid
+               :file-sync/progress]
+              nil))
+
+(defn set-file-sync-state [graph-uuid v]
   (when v (s/assert :frontend.fs.sync/sync-state v))
-  (set-state! [:file-sync/sync-state graph] v))
+  (set-state! [:file-sync/graph-state graph-uuid :file-sync/sync-state] v))
 
-(defn get-file-sync-manager []
-  (:file-sync/sync-manager @state))
+(defn get-file-sync-state
+  [graph-uuid]
+  (get-in @state [:file-sync/graph-state graph-uuid :file-sync/sync-state]))
 
-(defn get-file-sync-state [repo]
-  (get-in @state [:file-sync/sync-state repo]))
+(defn sub-file-sync-state
+  [graph-uuid]
+  (sub [:file-sync/graph-state graph-uuid :file-sync/sync-state]))
+
+(defn get-current-file-sync-graph-uuid
+  []
+  (get-in @state [:file-sync/graph-state :current-graph-uuid]))
+
+(defn sub-current-file-sync-graph-uuid
+  []
+  (sub [:file-sync/graph-state :current-graph-uuid]))
 
 (defn reset-parsing-state!
   []
@@ -1788,10 +1869,13 @@ Similar to re-frame subscriptions"
               {:is-active? is-active?
                :timestamp (inst-ms (js/Date.))}))
 
-(defn get-sync-graph-by-uuid
+(defn get-sync-graph-by-id
   [graph-uuid]
   (when graph-uuid
-    (first (filter #(= graph-uuid (:GraphUUID %))(get-repos)))))
+    (let [graph (first (filter #(= graph-uuid (:GraphUUID %))
+                               (get-repos)))]
+      (when (:url graph)
+        graph))))
 
 (defn unlinked-dir?
   [dir]

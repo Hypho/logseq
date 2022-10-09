@@ -2,8 +2,9 @@
   (:require [electron.handler :as handler]
             [electron.search :as search]
             [electron.updater :refer [init-updater] :as updater]
-            [electron.utils :refer [*win mac? linux? dev? logger get-win-from-sender restore-user-fetch-agent get-graph-name]]
+            [electron.utils :refer [*win mac? linux? dev? get-win-from-sender restore-user-fetch-agent get-graph-name]]
             [electron.url :refer [logseq-url-handler]]
+            [electron.logger :as logger]
             [clojure.string :as string]
             [promesa.core :as p]
             [cljs-bean.core :as bean]
@@ -39,14 +40,13 @@
   ;; manual/auto updater
   (when-not linux?
     (init-updater {:repo   "logseq/logseq"
-                   :logger logger
                    :win    win})))
 
 (defn open-url-handler
   "win - the main window instance (first renderer process)
    url - the input URL"
   [win url]
-  (.info logger "open-url" (str {:url url}))
+  (logger/info "open-url" {:url url})
 
   (let [parsed-url (js/URL. url)
         url-protocol (.-protocol parsed-url)]
@@ -106,7 +106,7 @@
                              (-> (. fs copy (path/join assets-from-dir filename) (path/join assets-to-dir filename))
                                  (p/catch
                                   (fn [e]
-                                    (.error logger "Failed to copy"
+                                    (logger/error "Failed to copy"
                                             (str {:from (path/join assets-from-dir filename)
                                                   :to (path/join assets-to-dir filename)})
                                             e)))))
@@ -118,7 +118,7 @@
                            ["css" "fonts" "icons" "img" "js"])))
                 export-css (. fs readFile export-or-custom-css-path)
                 _ (. fs writeFile (path/join static-dir "css" "export.css") export-css)
-                js-files ["main.js" "code-editor.js" "excalidraw.js"]
+                js-files ["main.js" "code-editor.js" "excalidraw.js" "tldraw.js"]
                 _ (p/all (map (fn [file]
                                 (. fs removeSync (path/join static-dir "js" file)))
                               js-files))
@@ -132,7 +132,7 @@
                 ;; TODO: ugly, replace with ls-files and filter with ".map"
                 _ (p/all (map (fn [file]
                                 (. fs removeSync (path/join static-dir "js" (str file ".map"))))
-                              ["main.js" "code-editor.js" "excalidraw.js" "age-encryption.js"]))]
+                              ["main.js" "code-editor.js" "excalidraw.js" "tldraw.js" "age-encryption.js"]))]
           (. dialog showMessageBox (clj->js {:message (str "Export public pages and publish assets to " root-dir " successfully")})))))))
 
 (defn setup-app-manager!
@@ -166,16 +166,16 @@
                (fn [_ type & args]
                  (try
                    (js-invoke app type args)
-                   (catch js/Error e
-                     (.error logger (str call-app-channel " " e))))))
+                   (catch :default e
+                     (logger/error (str call-app-channel " " e))))))
 
       (.handle call-win-channel
                (fn [^js e type & args]
                  (let [win (get-win-from-sender e)]
                    (try
                      (js-invoke win type args)
-                     (catch js/Error e
-                       (.error logger (str call-win-channel " " e))))))))
+                     (catch :default e
+                       (logger/error (str call-win-channel " " e))))))))
 
     #(do (clear-win-effects!)
          (.removeHandler ipcMain toggle-win-channel)
@@ -272,19 +272,19 @@
                (win/switch-to-window! window))))
 
       (.on app "window-all-closed" (fn []
-                                     (.debug logger "window-all-closed" "Quiting...")
+                                     (logger/debug "window-all-closed" "Quiting...")
                                      (try
                                        (fs-watcher/close-watcher!)
                                        (search/close!)
-                                       (catch js/Error e
-                                         (.error logger "window-all-closed" e)))
+                                       (catch :default e
+                                         (logger/error "window-all-closed" e)))
                                      (.quit app)))
       (.on app "ready"
            (fn []
              (let [t0 (setup-interceptor! app)
                    ^js win (win/create-main-window)
                    _ (reset! *win win)]
-               (.. logger (info (str "Logseq App(" (.getVersion app) ") Starting... ")))
+               (logger/info (str "Logseq App(" (.getVersion app) ") Starting... "))
 
                (restore-user-fetch-agent)
 
@@ -317,6 +317,7 @@
                                   (when @*quit-dirty? ;; when not updating
                                     (.preventDefault e)
                                     (let [web-contents (. win -webContents)]
+                                      (.send web-contents "persist-zoom-level" (.getZoomLevel web-contents))
                                       (.send web-contents "persistent-dbs"))
                                     (async/go
                                       (let [_ (async/<! state/persistent-dbs-chan)]
@@ -343,9 +344,9 @@
                (.on app "activate" #(when @*win (.show win)))))))))
 
 (defn start []
-  (.debug logger "Main - start")
+  (logger/debug "Main - start")
   (when @*setup-fn (@*setup-fn)))
 
 (defn stop []
-  (.debug logger "Main - stop")
+  (logger/debug "Main - stop")
   (when @*teardown-fn (@*teardown-fn)))

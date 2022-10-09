@@ -120,6 +120,7 @@
 
 ;; TODO: extract code for `ls-dir-files` and `reload-dir!`
 (defn ^:large-vars/cleanup-todo ls-dir-files-with-handler!
+  "Read files from directory and setup repo (for the first time setup a repo)"
   ([ok-handler] (ls-dir-files-with-handler! ok-handler nil))
   ([ok-handler {:keys [empty-dir?-or-pred dir-result-fn]}]
    (let [path-handles (atom {})
@@ -172,6 +173,7 @@
                                                                 (contains? #{config/app-name
                                                                              gp-config/default-draw-directory
                                                                              (config/get-journals-directory)
+                                                                             (config/get-whiteboards-directory)
                                                                              (config/get-pages-directory)}
                                                                            last-part)))))
                                                    (into {})))))
@@ -188,7 +190,7 @@
                           (p/let [files (map #(dissoc % :file/file) result)
                                   graphs-txid-meta (util-fs/read-graphs-txid-info dir-name)
                                   graph-uuid (and (vector? graphs-txid-meta) (second graphs-txid-meta))]
-                            (if-let [exists-graph (state/get-sync-graph-by-uuid graph-uuid)]
+                            (if-let [exists-graph (state/get-sync-graph-by-id graph-uuid)]
                               (state/pub-event!
                                [:notification/show
                                 {:content (str "This graph already exists in \"" (:root exists-graph) "\"")
@@ -203,7 +205,6 @@
                                     (state/add-repo! {:url repo :nfs? true})
                                     (state/set-loading-files! repo false)
                                     (when ok-handler (ok-handler {:url repo}))
-                                    (fs/watch-dir! dir-name)
                                     (db/persist-if-idle! repo))))))))
                 (p/catch (fn [error]
                            (log/error :nfs/load-files-error repo)
@@ -338,14 +339,16 @@
                                        (fn [path handle]
                                          (when nfs?
                                            (swap! path-handles assoc path handle))))
-                         global-dir (global-config-handler/global-config-dir)
-                         global-files-result (if (config/global-config-enabled?)
-                                               (fs/get-files global-dir (constantly nil))
-                                               [])
                          new-local-files (-> (->db-files mobile-native? electron? dir-name local-files-result)
                                              (remove-ignore-files dir-name nfs?))
-                         new-global-files (-> (->db-files mobile-native? electron? global-dir global-files-result)
-                                              (remove-ignore-files global-dir nfs?))
+                         new-global-files (if (config/global-config-enabled?)
+                                            (p/let [global-files-result (fs/get-files
+                                                                          (global-config-handler/global-config-dir)
+                                                                          (constantly nil))
+                                                    global-files (-> (->db-files mobile-native? electron? (global-config-handler/global-config-dir) global-files-result)
+                                                  (remove-ignore-files (global-config-handler/global-config-dir) nfs?))]
+                                              global-files)
+                                            (p/resolved []))
                          new-files (concat new-local-files new-global-files)
 
                          _ (when nfs?
