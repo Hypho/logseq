@@ -57,7 +57,7 @@
           ;; a valid html element tag is used, using sablono
           vector->react-elems (fn [[key val]]
                                 (if (sequential? val)
-                                  [key (daiquiri.interpreter/interpret val)]
+                                  [key (interpreter/interpret val)]
                                   [key val]))
           new-options (into {}
                             (if skip-opts-transform?
@@ -119,10 +119,34 @@
       [ref tick])
      [set-ref rect])))
 
+(defn ->breakpoint
+  "Converts a number to a breakpoint string
+   Values come from https://tailwindcss.com/docs/responsive-design"
+  [size]
+  (cond
+    (nil? size) :md
+    (<= size 640) :sm
+    (<= size 768) :md
+    (<= size 1024) :lg
+    (<= size 1280) :xl
+    (<= size 1536) :xl
+    :else :2xl))
+
+(defn use-breakpoint
+  "Returns the current breakpoint
+   You can manually change the tick value, if you want to force refresh the value, you can manually change the tick value"
+  ([] (use-breakpoint nil))
+  ([tick]
+   (let [[ref rect] (use-bounding-client-rect tick)
+         bp (->breakpoint (when (some? rect) (.-width rect)))]
+     [ref bp])))
+
 (defn use-click-outside
   "Returns a function that can be used to register a callback
    that will be called when the user clicks outside the given dom node"
-  [handler]
+  [handler & {:keys [capture? event]
+              :or {capture? false
+                   event "click"}}] ;; could be "mousedown" or "click"
   (let [[ref set-ref] (rum/use-state nil)]
     (rum/use-effect!
      (fn []
@@ -130,7 +154,7 @@
                         (when (and ref
                                    (not (.. ref (contains (.-target e)))))
                           (handler e)))]
-         (js/document.addEventListener "click" listener)
-         #(.removeEventListener js/document "click" listener)))
+         (js/document.addEventListener event listener capture?)
+         #(js/document.removeEventListener event listener capture?)))
      [ref])
     set-ref))

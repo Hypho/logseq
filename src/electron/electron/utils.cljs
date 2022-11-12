@@ -140,6 +140,12 @@
   [graph-dir]
   (str "logseq_local_" graph-dir))
 
+(defn decode-protected-assets-schema-path
+  [schema-path]
+  (cond-> schema-path
+    (string? schema-path)
+    (string/replace "/logseq__colon/" ":/")))
+
 ;; Keep update with the normalization in main
 (defn normalize
   [s]
@@ -148,3 +154,11 @@
 (defn normalize-lc
   [s]
   (normalize (string/lower-case s)))
+
+(defn safe-decode-uri-component
+  [uri]
+  (try
+    (js/decodeURIComponent uri)
+    (catch :default _
+      (println "decodeURIComponent failed: " uri)
+      uri)))

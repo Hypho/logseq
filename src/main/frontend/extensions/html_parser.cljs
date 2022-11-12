@@ -4,7 +4,7 @@
             [clojure.walk :as walk]
             [frontend.config :as config]
             [frontend.util :as util]
-            [hickory.core :as hickory]))
+            [frontend.extensions.hickory :as hickory]))
 
 (defonce *inside-pre? (atom false))
 (defn- hiccup-without-style
@@ -132,7 +132,7 @@
                            :h5 (block-transform 5 children)
                            :h6 (block-transform 6 children)
                            :a (let [href (:href attrs)
-                                    label (or (map-join children) "")
+                                    label (or (string/trim (map-join children)) "")
                                     has-img-tag? (util/safe-re-find #"\[:img" (str x))]
                                 (when-not (string/blank? href)
                                   (if has-img-tag?
@@ -171,7 +171,7 @@
                                    (string? (first children))
                                    (let [pattern (config/get-code format)]
                                      (str " "
-                                          (str pattern (first children) pattern)
+                                          pattern (map-join children) pattern
                                           " "))
 
                                    ;; skip monospace style, since it has more complex children
@@ -273,7 +273,7 @@
 (defn convert
   [format html]
   (when-not (string/blank? html)
-    (let [hiccup (hickory/as-hiccup (hickory/parse html))
+    (let [hiccup (hickory/html->hiccup html)
           decoded-hiccup (html-decode-hiccup hiccup)]
       (hiccup->doc format decoded-hiccup))))
 

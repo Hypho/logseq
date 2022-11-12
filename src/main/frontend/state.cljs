@@ -153,7 +153,12 @@
      :electron/updater                      {}
      :electron/user-cfgs                    nil
 
+     ;; assets
+     :assets/alias-enabled?                 (or (storage/get :assets/alias-enabled?) false)
+     :assets/alias-dirs                     (or (storage/get :assets/alias-dirs) [])
+
      ;; mobile
+     :mobile/container-urls                 nil
      :mobile/show-action-bar?               false
      :mobile/actioned-block                 nil
      :mobile/show-toolbar?                  false
@@ -193,6 +198,7 @@
      ;; pdf
      :pdf/current                           nil
      :pdf/ref-highlight                     nil
+     :pdf/block-highlight-colored?          (or (storage/get "ls-pdf-hl-block-is-colored") true)
 
      ;; all notification contents as k-v pairs
      :notification/contents                 {}
@@ -258,6 +264,8 @@
      :ui/find-in-page                       nil
      :graph/importing                       nil
      :graph/importing-state                 {}
+
+     :whiteboard/onboarding-whiteboard?     (or (storage/get :ls-onboarding-whiteboard?) false)
      })))
 
 ;; Block ast state
@@ -287,6 +295,10 @@
 ;;  (re-)fetches get-current-repo needlessly
 ;; TODO: Add consistent validation. Only a few config options validate at get time
 
+(defn get-current-pdf
+  []
+  (:pdf/current @state))
+
 (def default-config
   "Default config for a repo-specific, user config"
   {:feature/enable-search-remove-accents? true
@@ -296,7 +308,7 @@
    :file/name-format :legacy})
 
 ;; State that most user config is dependent on
-(declare get-current-repo)
+(declare get-current-repo sub set-state!)
 
 (defn merge-configs
   "Merges user configs in given orders. All values are overriden except for maps
@@ -342,6 +354,17 @@ should be done through this fn in order to get global config and config defaults
   (merge
     built-in-macros
     (:macros (get-config))))
+
+(defn set-assets-alias-enabled!
+  [v]
+  (set-state! :assets/alias-enabled? (boolean v))
+  (storage/set :assets/alias-enabled? (boolean v)))
+
+(defn set-assets-alias-dirs!
+  [dirs]
+  (when dirs
+    (set-state! :assets/alias-dirs dirs)
+    (storage/set :assets/alias-dirs dirs)))
 
 (defn get-custom-css-link
   []
@@ -557,7 +580,6 @@ Similar to re-frame subscriptions"
    (enable-whiteboards? (get-current-repo)))
   ([repo]
    (and
-    (util/electron?)
     ((resolve 'frontend.handler.user/alpha-user?)) ;; using resolve to avoid circular dependency
     (:feature/enable-whiteboards? (sub-config repo)))))
 
@@ -627,9 +649,9 @@ Similar to re-frame subscriptions"
   []
   (:editor/logical-outdenting? (sub-config)))
 
-(defn enable-encryption?
-  [repo]
-  (:feature/enable-encryption? (sub-config repo)))
+(defn perferred-pasting-file?
+  []
+  (:editor/perferred-pasting-file? (sub-config)))
 
 (defn doc-mode-enter-for-new-line?
   []
@@ -684,6 +706,12 @@ Similar to re-frame subscriptions"
     (get-in (get-route-match)
             [:path-params :name])))
 
+(defn get-current-whiteboard
+  []
+  (when (= :whiteboard (get-current-route))
+    (get-in (get-route-match)
+            [:path-params :name])))
+
 (defn route-has-p?
   []
   (get-in (get-route-match) [:query-params :p]))
@@ -694,7 +722,7 @@ Similar to re-frame subscriptions"
       (when-not (mobile-util/native-platform?)
         "local")))
 
-(defn get-remote-repos
+(defn get-remote-graphs
   []
   (get-in @state [:file-sync/remote-graphs :graphs]))
 
@@ -702,6 +730,22 @@ Similar to re-frame subscriptions"
   [uuid]
   (when-let [graphs (seq (get-in @state [:file-sync/remote-graphs :graphs]))]
     (some #(when (= (:GraphUUID %) (str uuid)) %) graphs)))
+
+(defn delete-remote-graph!
+  [repo]
+  (swap! state update-in [:file-sync/remote-graphs :graphs]
+         (fn [repos]
+           (remove #(and
+                     (:GraphUUID repo)
+                     (:GraphUUID %)
+                     (= (:GraphUUID repo) (:GraphUUID %))) repos))))
+
+(defn add-remote-graph!
+  [repo]
+  (swap! state update-in [:file-sync/remote-graphs :graphs]
+         (fn [repos]
+           (->> (conj repos repo)
+                (distinct)))))
 
 (defn get-repos
   []
@@ -745,7 +789,10 @@ Similar to re-frame subscriptions"
   (swap! state update-in [:me :repos]
          (fn [repos]
            (->> (remove #(or (= (:url repo) (:url %))
-                             (= (:GraphUUID repo) (:GraphUUID %))) repos)
+                             (and
+                              (:GraphUUID repo)
+                              (:GraphUUID %)
+                              (= (:GraphUUID repo) (:GraphUUID %)))) repos)
                 (util/distinct-by :url)))))
 
 (defn set-timestamp-block!
@@ -987,7 +1034,7 @@ Similar to re-frame subscriptions"
                                             (cons [repo db-id block-type])
                                             (distinct))))
       (open-right-sidebar!)
-      (when-let [elem (gdom/getElementByClass "cp__right-sidebar-scrollable")]
+      (when-let [elem (gdom/getElementByClass "sidebar-item-list")]
         (util/scroll-to elem 0)))))
 
 (defn sidebar-remove-block!
@@ -1125,11 +1172,12 @@ Similar to re-frame subscriptions"
 (defn load-app-user-cfgs
   ([] (load-app-user-cfgs false))
   ([refresh?]
-   (p/let [cfgs (if (or refresh? (nil? (:electron/user-cfgs @state)))
-                  (ipc/ipc "userAppCfgs")
-                  (:electron/user-cfgs @state))
-           cfgs (if (object? cfgs) (bean/->clj cfgs) cfgs)]
-          (set-state! :electron/user-cfgs cfgs))))
+   (when (util/electron?)
+     (p/let [cfgs (if (or refresh? (nil? (:electron/user-cfgs @state)))
+                    (ipc/ipc :userAppCfgs)
+                    (:electron/user-cfgs @state))
+             cfgs (if (object? cfgs) (bean/->clj cfgs) cfgs)]
+       (set-state! :electron/user-cfgs cfgs)))))
 
 (defn setup-electron-updater!
   []
@@ -1214,7 +1262,7 @@ Similar to re-frame subscriptions"
   ([panel-content]
    (set-sub-modal! panel-content
                    {:close-btn? true}))
-  ([panel-content {:keys [id label close-btn? show? center?] :as opts}]
+  ([panel-content {:keys [id label close-btn? close-backdrop? show? center?] :as opts}]
    (if (not (modal-opened?))
      (set-modal! panel-content opts)
      (let [modals (:modal/subsets @state)
@@ -1226,7 +1274,8 @@ Similar to re-frame subscriptions"
                     :modal/label         (or label (if center? "ls-modal-align-center" ""))
                     :modal/show?         (if (boolean? show?) show? true)
                     :modal/panel-content panel-content
-                    :modal/close-btn?    close-btn?})]
+                    :modal/close-btn?    close-btn?
+                    :modal/close-backdrop? (if (boolean? close-backdrop?) close-backdrop? true)})]
        (swap! state update-in
               [:modal/subsets (or idx (count modals))]
               merge input)
@@ -1409,7 +1458,8 @@ Similar to re-frame subscriptions"
 
 (defn active-tldraw-app
   []
-  ^js js/window.tln)
+  (when-let [tldraw-el (.closest js/document.activeElement ".logseq-tldraw[data-tlapp]")]
+    (gobj/get js/window.tlapps (.. tldraw-el -dataset -tlapp))))
 
 (defn tldraw-editing-logseq-block?
   []
@@ -1602,9 +1652,14 @@ Similar to re-frame subscriptions"
   [args]
   (set-state! :editor/args args))
 
+(defn whiteboard-active-but-not-editing-portal?
+  []
+  (and (active-tldraw-app) (not (tldraw-editing-logseq-block?))))
+
 (defn block-component-editing?
   []
-  (:block/component-editing-mode? @state))
+  (or (:block/component-editing-mode? @state)
+      (whiteboard-active-but-not-editing-portal?)))
 
 (defn set-block-component-editing-mode!
   [value]
@@ -1890,3 +1945,22 @@ Similar to re-frame subscriptions"
   {:pre [(map? v)
          (= #{:repo :old-path :new-path} (set (keys v)))]}
   (async/offer! (get-file-rename-event-chan) v))
+
+(defn set-onboarding-whiteboard!
+  [v]
+  (set-state! :whiteboard/onboarding-whiteboard? v)
+  (storage/set :ls-onboarding-whiteboard? v))
+
+(defn get-onboarding-whiteboard?
+  []
+  (get-in @state [:whiteboard/onboarding-whiteboard?]))
+
+(defn get-local-container-root-url
+  []
+  (when (mobile-util/native-ios?)
+    (get-in @state [:mobile/container-urls :localContainerUrl])))
+
+(defn get-icloud-container-root-url
+  []
+  (when (mobile-util/native-ios?)
+    (get-in @state [:mobile/container-urls :iCloudContainerUrl])))

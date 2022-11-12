@@ -12,6 +12,7 @@
             [datascript.core :as d]
             [electron.ipc :as ipc]
             [frontend.components.svg :as svg]
+            [frontend.config :as config]
             [frontend.context.i18n :refer [t]]
             [frontend.db-mixins :as db-mixins]
             [frontend.handler.notification :as notification]
@@ -34,6 +35,8 @@
             [medley.core :as medley]
             [promesa.core :as p]
             [rum.core :as rum]))
+
+(declare icon)
 
 (defonce transition-group (r/adapt-class TransitionGroup))
 (defonce css-transition (r/adapt-class CSSTransition))
@@ -58,7 +61,8 @@
    "yellow"
    "green"
    "blue"
-   "purple"])
+   "purple"
+   "pink"])
 
 (rum/defc ls-textarea
   < rum/reactive
@@ -158,7 +162,7 @@
      (dissoc options :only-child?) child]
     [:a.flex.justify-between.px-4.py-2.text-sm.transition.ease-in-out.duration-150.cursor.menu-link
      options
-     [:span child]
+     [:span.flex-1 child]
      (when shortcut
        [:span.ml-1 (render-keyboard-shortcut shortcut)])]))
 
@@ -214,29 +218,15 @@
     (let [svg
           (case status
             :success
-            [:svg.h-6.w-6.text-green-400
-             {:stroke "var(--ls-success-color)", :viewBox "0 0 24 24", :fill "none"}
-             [:path
-              {:d               "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-               :stroke-width    "2"
-               :stroke-linejoin "round"
-               :stroke-linecap  "round"}]]
-            :warning
-            [:svg.h-6.w-6.text-yellow-500
-             {:stroke "var(--ls-warning-color)", :viewBox "0 0 24 24", :fill "none"}
-             [:path
-              {:d               "M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-               :stroke-width    "2"
-               :stroke-linejoin "round"
-               :stroke-linecap  "round"}]]
+            (icon "circle-check" {:class "text-green-500" :size "22"})
 
-            [:svg.h-6.w-6.text-red-500
-             {:view-box "0 0 20 20", :fill "var(--ls-error-color)"}
-             [:path
-              {:clip-rule "evenodd"
-               :d
-               "M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z"
-               :fill-rule "evenodd"}]])]
+            :warning
+            (icon "alert-circle" {:class "text-yellow-500" :size "22"})
+
+            :error
+            (icon "circle-x" {:class "text-red-500" :size "22"})
+
+            (icon "info-circle" {:class "text-indigo-500" :size "22"}))]
       [:div.ui__notifications-content
        {:style
         (when (or (= state "exiting")
@@ -262,28 +252,42 @@
             [:button.inline-flex.text-gray-400.focus:outline-none.focus:text-gray-500.transition.ease-in-out.duration-150.notification-close-button
              {:on-click (fn []
                           (notification/clear! uid))}
-             [:svg.h-5.w-5
-              {:fill "currentColor", :view-Box "0 0 20 20"}
-              [:path
-               {:clip-rule "evenodd"
-                :d
-                "M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
-                :fill-rule "evenodd"}]]]]]]]]])))
+
+            (icon "x" {:fill "currentColor"})]]]]]]])))
+
+(declare button)
+
+(rum/defc notification-clear-all
+  []
+  [:div.ui__notifications-content
+   [:div.pointer-events-auto
+    (button "Clear all"
+      :intent "logseq"
+      :on-click (fn []
+                  (notification/clear-all!)))]])
 
 (rum/defc notification < rum/reactive
   []
   (let [contents (state/sub :notification/contents)]
     (transition-group
      {:class-name "notifications ui__notifications"}
-     (doall (map (fn [el]
-                   (let [k (first el)
-                         v (second el)]
-                     (css-transition
-                      {:timeout 100
-                       :key     (name k)}
-                      (fn [state]
-                        (notification-content state (:content v) (:status v) k)))))
-                 contents)))))
+     (let [notifications (map (fn [el]
+                                (let [k (first el)
+                                      v (second el)]
+                                  (css-transition
+                                   {:timeout 100
+                                    :key     (name k)}
+                                   (fn [state]
+                                     (notification-content state (:content v) (:status v) k)))))
+                           contents)
+           clear-all (when (> (count contents) 1)
+                       (css-transition
+                        {:timeout 100
+                         :k       "clear-all"}
+                        (fn [_state]
+                          (notification-clear-all))))
+           items (if clear-all (cons clear-all notifications) notifications)]
+       (doall items)))))
 
 (rum/defc humanity-time-ago
   [input opts]
@@ -328,6 +332,7 @@
 (defn inject-document-devices-envs!
   []
   (let [^js cl (.-classList js/document.documentElement)]
+    (when config/publishing? (.add cl "is-publish-mode"))
     (when util/mac? (.add cl "is-mac"))
     (when util/win32? (.add cl "is-win32"))
     (when (util/electron?) (.add cl "is-electron"))
@@ -359,7 +364,7 @@
       style)))
 
 (defn apply-custom-theme-effect! [theme]
-  (when plugin-handler/lsp-enabled?
+  (when config/lsp-enabled?
     (when-let [custom-theme (state/sub [:ui/custom-theme (keyword theme)])]
       (when-let [url (:url custom-theme)]
         (js/LSPluginCore.selectTheme (bean/->js custom-theme)
@@ -638,6 +643,8 @@
         [:span.flex.w-full.rounded-md.shadow-sm.sm:ml-3.sm:w-auto
          [:button.inline-flex.justify-center.w-full.rounded-md.border.border-transparent.px-4.py-2.bg-indigo-600.text-base.leading-6.font-medium.text-white.shadow-sm.hover:bg-indigo-500.focus:outline-none.focus:border-indigo-700.focus:shadow-outline-indigo.transition.ease-in-out.duration-150.sm:text-sm.sm:leading-5
           {:type     "button"
+           :autoFocus "on"
+           :class "ui__modal-enter"
            :on-click #(and (fn? on-confirm)
                            (on-confirm % {:close-fn close-fn
                                           :sub-selected (and *sub-checkbox-selected @*sub-checkbox-selected)}))}
@@ -937,7 +944,7 @@
                            (when (:class opts)
                              (str " " (string/trim (:class opts)))))
                       (if extension? "tie tie" "ti ti"))}
-                    (dissoc opts :class :extension?))]
+                    (dissoc opts :class :extension? :font?))]
 
          ;; tabler svg react
          (when-let [klass (gobj/get js/tablerIcons (str "Icon" (csk/->PascalCase class)))]
@@ -947,24 +954,26 @@
               (f (merge {:size 18} (r/map-keys->camel-case opts)))])))))))
 
 (defn button
-  [text & {:keys [background href class intent on-click small? large? title icon]
+  [text & {:keys [background href class intent on-click small? large? title icon icon-props disabled?]
            :or   {small? false large? false}
            :as   option}]
   (let [klass (when-not intent ".bg-indigo-600.hover:bg-indigo-700.focus:border-indigo-700.active:bg-indigo-700.text-center")
         klass (if background (string/replace klass "indigo" background) klass)
         klass (if small? (str klass ".px-2.py-1") klass)
-        klass (if large? (str klass ".text-base") klass)]
+        klass (if large? (str klass ".text-base") klass)
+        klass (if disabled? (str klass "disabled:opacity-75") klass)]
     [:button.ui__button
      (merge
       {:type  "button"
        :title title
+       :disabled disabled?
        :class (str (util/hiccup->class klass) " " class)}
       (dissoc option :background :class :small? :large?)
       (when href
         {:on-click (fn []
                      (util/open-url href)
                      (when (fn? on-click) (on-click)))}))
-     (when icon (frontend.ui/icon icon {:class "mr-1"}))
+     (when icon (frontend.ui/icon icon (merge icon-props {:class (when-not (empty? text) "mr-1")})))
      text]))
 
 (rum/defc type-icon

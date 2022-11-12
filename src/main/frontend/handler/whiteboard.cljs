@@ -4,12 +4,15 @@
             [dommy.core :as dom]
             [frontend.db.model :as model]
             [frontend.db.utils :as db-utils]
+            [frontend.handler.editor :as editor-handler]
             [frontend.handler.route :as route-handler]
             [frontend.modules.outliner.core :as outliner]
             [frontend.modules.outliner.file :as outliner-file]
             [frontend.state :as state]
             [frontend.util :as util]
-            [logseq.graph-parser.whiteboard :as gp-whiteboard]))
+            [logseq.graph-parser.util :as gp-util]
+            [logseq.graph-parser.whiteboard :as gp-whiteboard]
+            [promesa.core :as p]))
 
 (defn shape->block [shape page-name idx]
   (let [properties {:ls-type :whiteboard-shape
@@ -28,18 +31,25 @@
                            :block/properties {:ls-type :whiteboard-page
                                               :logseq.tldraw.page (dissoc tldr-data :shapes)}}
                           (when page-entity (select-keys page-entity [:block/created-at])))
-        page-block (outliner/block-with-timestamps page-block)
         ;; todo: use get-paginated-blocks instead?
         existing-blocks (model/get-page-blocks-no-cache (state/get-current-repo)
                                                         page-name
                                                         {:pull-keys '[:db/id
                                                                       :block/uuid
                                                                       :block/properties [:ls-type]
+                                                                      :block/created-at
+                                                                      :block/updated-at
                                                                       {:block/parent [:block/uuid]}]})
+        id->block (zipmap (map :block/uuid existing-blocks) existing-blocks)
         shapes (:shapes tldr-data)
         ;; we should maintain the order of the shapes in the page
         ;; bring back/forward is depending on this ordering
-        blocks (map-indexed (fn [idx shape] (shape->block shape page-name idx)) shapes)
+        blocks (map-indexed
+                (fn [idx shape]
+                  (let [block (shape->block shape page-name idx)]
+                    (merge block
+                           (select-keys (id->block (:block/uuid block))
+                                        [:block/created-at :block/updated-at])))) shapes)
         block-ids (->> shapes
                        (map (fn [shape] (when (= (:blockType shape) "B")
                                           (uuid (:pageId shape)))))
@@ -49,15 +59,17 @@
         ;; delete blocks when all of the following are false
         ;; - the block is not in the new blocks list
         ;; - the block's parent is not in the new block list
-        ;; - the block is not a shape block 
+        ;; - the block is not a shape block
         delete-blocks (filterv (fn [block]
                                  (not
                                   (or (block-ids (:block/uuid block))
                                       (block-ids (:block/uuid (:block/parent block)))
                                       (not (gp-whiteboard/shape-block? block)))))
                                existing-blocks)
-        delete-blocks-tx (mapv (fn [s] [:db/retractEntity (:db/id s)]) delete-blocks)]
-    (concat [page-block] blocks delete-blocks-tx)))
+        delete-blocks-tx (mapv (fn [s] [:db/retractEntity (:db/id s)]) delete-blocks)
+        page-and-blocks (->> (cons page-block blocks)
+                             (map outliner/block-with-timestamps))]
+    (concat page-and-blocks delete-blocks-tx)))
 
 (defn- get-whiteboard-clj [page-name]
   (when (model/page-exists? page-name)
@@ -143,13 +155,14 @@
    By default it will be placed next to the given shape id"
   [block-uuid source-shape & {:keys [link? bottom?]}]
   (let [app (state/active-tldraw-app)
-        api (.-api app)
+        ^js api (.-api app)
         point (-> (.getShapeById app source-shape)
                   (.-bounds)
-                  ((fn [bounds] (if bottom? 
+                  ((fn [bounds] (if bottom?
                                   [(.-minX bounds) (+ 64 (.-maxY bounds))]
                                   [(+ 64 (.-maxX bounds)) (.-minY bounds)]))))
         shape (->logseq-portal-shape block-uuid point)]
+    (when (uuid? block-uuid) (editor-handler/set-blocks-id! [block-uuid]))
     (.createShapes api (clj->js shape))
     (when link?
       (.createNewLineBinding api source-shape (:id shape)))))
@@ -191,17 +204,61 @@
         tx {:block/left (select-keys last-root-block [:db/id])
             :block/uuid uuid
             :block/content (or content "")
-            :block/format :markdown ; fixme
+            :block/format :markdown ;; fixme to support org?
             :block/page {:block/name (util/page-name-sanity-lc page-name)}
             :block/parent {:block/name page-name}}]
     (db-utils/transact! [tx])
     uuid))
 
-(defn inside-portal
+(defn inside-portal?
   [target]
-  (dom/closest target ".tl-logseq-cp-container"))
+  (some? (dom/closest target ".tl-logseq-cp-container")))
 
 (defn closest-shape
   [target]
   (when-let [shape-el (dom/closest target "[data-shape-id]")]
     (.getAttribute shape-el "data-shape-id")))
+
+(defn get-onboard-whiteboard-edn
+  []
+  (p/let [^js res (js/fetch "./whiteboard/onboarding.edn") ;; do we need to cache it?
+          text (.text res)
+          edn (gp-util/safe-read-string text)]
+    edn))
+
+(defn clone-whiteboard-from-edn
+  "Given a tldr, clone the whiteboard page into current active whiteboard"
+  ([edn]
+   (when-let [app (state/active-tldraw-app)]
+     (clone-whiteboard-from-edn edn (.-api app))))
+  ([{:keys [pages blocks]} api]
+   (let [page-block (first pages)
+         ;; FIXME: should also clone normal blocks
+         shapes (->> blocks
+                     (filter gp-whiteboard/shape-block?)
+                     (map gp-whiteboard/block->shape)
+                     (sort-by :index))
+         tldr-page (gp-whiteboard/page-block->tldr-page page-block)
+         assets (:assets tldr-page)
+         bindings (:bindings tldr-page)]
+     (.cloneShapesIntoCurrentPage ^js api (clj->js {:shapes shapes
+                                                    :assets assets
+                                                    :bindings bindings})))))
+(defn should-populate-onboarding-whiteboard?
+  "When there is not whiteboard, or there is only whiteboard that is the given page name, we should populate the onboarding whiteboard"
+  [page-name]
+  (let [whiteboards (model/get-all-whiteboards (state/get-current-repo))]
+    (and (or (empty? whiteboards)
+             (and
+              (= 1 (count whiteboards))
+              (= page-name (:block/name (first whiteboards)))))
+         (not (state/get-onboarding-whiteboard?)))))
+
+(defn populate-onboarding-whiteboard
+  [api]
+  (when (some? api)
+    (-> (p/let [edn (get-onboard-whiteboard-edn)]
+          (clone-whiteboard-from-edn edn api)
+          (state/set-onboarding-whiteboard! true))
+        (p/catch
+         (fn [e] (js/console.warn "Faield to populate onboarding whiteboard" e))))))

@@ -52,14 +52,14 @@ and handles unexpected failure."
   ([block]
    (some->> block
             str
-            date/valid?
+            date/normalize-date
             (tf/unparse date/custom-formatter))))
 
 (defn normalize-block
   "Normalizes supported formats such as dates and percentages."
   ([block]
    (->> [normalize-as-percentage normalize-as-date identity]
-        (map #(% block))
+        (map #(% (if (set? block) (first block) block)))
         (remove nil?)
         (first))))
 

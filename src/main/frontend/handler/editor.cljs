@@ -21,6 +21,7 @@
             [frontend.handler.notification :as notification]
             [frontend.handler.repeated :as repeated]
             [frontend.handler.route :as route-handler]
+            [frontend.handler.assets :as assets-handler]
             [frontend.idb :as idb]
             [frontend.image :as image]
             [frontend.mobile.util :as mobile-util]
@@ -37,7 +38,6 @@
             [frontend.util.keycode :as keycode]
             [frontend.util.list :as list]
             [frontend.util.marker :as marker]
-            [frontend.util.priority :as priority]
             [frontend.util.property :as property]
             [frontend.util.text :as text-util]
             [frontend.util.thingatpt :as thingatpt]
@@ -135,8 +135,7 @@
      (let [{:keys [selection-start selection-end format selection value edit-id input]} m
            cur-pos (cursor/pos input)
            empty-selection? (= selection-start selection-end)
-           selection-link? (and selection (or (util/starts-with? selection "http://")
-                                              (util/starts-with? selection "https://")))
+           selection-link? (and selection (gp-util/url? selection))
            [content forward-pos] (cond
                                    empty-selection?
                                    (config/get-empty-link-and-forward-pos format)
@@ -370,18 +369,19 @@
     (profile
      "Save block: "
      (let [block' (wrap-parse-block block)]
-       (util/pprint block')
        (outliner-tx/transact!
          {:outliner-op :save-block}
          (outliner-core/save-block! block'))
 
        ;; sanitized page name changed
        (when-let [title (get-in block' [:block/properties :title])]
-         (when-let [old-page-name (:block/name (db/entity (:db/id (:block/page block'))))]
-           (when (and (:block/pre-block? block')
-                      (not (string/blank? title))
-                      (not= (util/page-name-sanity-lc title) old-page-name))
-             (state/pub-event! [:page/title-property-changed old-page-name title]))))))))
+         (if (string? title)
+           (when-let [old-page-name (:block/name (db/entity (:db/id (:block/page block'))))]
+             (when (and (:block/pre-block? block')
+                        (not (string/blank? title))
+                        (not= (util/page-name-sanity-lc title) old-page-name))
+               (state/pub-event! [:page/title-property-changed old-page-name title])))
+           (js/console.error (str "Title is not a string: " title))))))))
 
 (defn save-block-if-changed!
   ([block value]
@@ -754,17 +754,6 @@
                                           (util/format "[#%s]" priority)
                                           (util/format "[#%s]" new-priority))]
     (save-block-if-changed! block new-content)))
-
-(defn cycle-priority!
-  []
-  (when (state/get-edit-block)
-    (let [format (or (db/get-page-format (state/get-current-page))
-                     (state/get-preferred-format))
-          input-id (state/get-edit-input-id)
-          content (state/get-edit-content)
-          new-priority (priority/cycle-priority-state content)
-          new-value (priority/add-or-update-priority content format new-priority)]
-      (state/set-edit-content! input-id new-value))))
 
 (defn delete-block-aux!
   [{:block/keys [uuid repo] :as _block} children?]
@@ -1370,50 +1359,74 @@
     (for [[index ^js file] (map-indexed vector files)]
       ;; WARN file name maybe fully qualified path when paste file
       (let [file-name (util/node-path.basename (.-name file))
-            [file-base ext] (if file-name
-                              (let [last-dot-index (string/last-index-of file-name ".")]
-                                [(subs file-name 0 last-dot-index)
-                                 (subs file-name last-dot-index)])
-                              ["" ""])
-            filename (str (gen-filename index file-base) ext)
-            filename (str path "/" filename)]
-                                        ;(js/console.debug "Write asset #" dir filename file)
+            [file-base ext-full ext-base] (if file-name
+                              (let [ext-base (util/node-path.extname file-name)
+                                    ext-full (if-not (config/extname-of-supported? ext-base)
+                                               (util/full-path-extname file-name) ext-base)]
+                                [(subs file-name 0 (- (count file-name)
+                                                      (count ext-full))) ext-full ext-base])
+                              ["" "" ""])
+            filename  (str (gen-filename index file-base) ext-full)
+            filename  (str path "/" filename)
+            matched-alias (assets-handler/get-matched-alias-by-ext ext-base)
+              filename (cond-> filename
+                         (not (nil? matched-alias))
+                         (string/replace #"^[.\/\\]*assets[\/\\]+" ""))
+              dir (or (:dir matched-alias) dir)]
+
         (if (util/electron?)
           (let [from (.-path file)
                 from (if (string/blank? from) nil from)]
-            (p/then (js/window.apis.copyFileToAssets dir filename from)
-                    #(p/resolved [filename (if (string? %) (js/File. #js[] %) file) (.join util/node-path dir filename)])))
+
+            (js/console.debug "Debug: Copy Asset #" dir filename from)
+
+            (-> (js/window.apis.copyFileToAssets dir filename from)
+                (p/then
+                 (fn [dest]
+                   [filename
+                    (if (string? dest) (js/File. #js[] dest) file)
+                    (.join util/node-path dir filename)
+                    matched-alias]))
+                (p/catch #(js/console.error "Debug: Copy Asset Error#" %))))
+
           (p/then (fs/write-file! repo dir filename (.stream file) nil)
-                  #(p/resolved [filename file]))))))))
+                  #(p/resolved [filename file nil matched-alias]))))))))
 
 (defonce *assets-url-cache (atom {}))
 
 (defn make-asset-url
   [path] ;; path start with "/assets" or compatible for "../assets"
-  (let [repo-dir (config/get-repo-dir (state/get-current-repo))
-        path (string/replace path "../" "/")
-        data-url? (string/starts-with? path "data:")]
-    (cond
-      data-url?
-      path ;; just return the original
-      
-      (util/electron?)
-      (str "assets://" repo-dir path)
+  (if config/publishing? path
+    (let [repo      (state/get-current-repo)
+          repo-dir  (config/get-repo-dir repo)
+          path      (string/replace path "../" "/")
+          full-path (util/node-path.join repo-dir path)
+          data-url? (string/starts-with? path "data:")]
+      (cond
+        data-url?
+        path ;; just return the original
 
-      (mobile-util/native-platform?)
-      (mobile-util/convert-file-src (str repo-dir path))
+        (and (assets-handler/alias-enabled?)
+             (assets-handler/check-alias-path? path))
+        (assets-handler/resolve-asset-real-path-url (state/get-current-repo) path)
 
-      :else
-      (let [handle-path (str "handle" repo-dir path)
-            cached-url (get @*assets-url-cache (keyword handle-path))]
-        (if cached-url
-          (p/resolved cached-url)
-          (p/let [handle (idb/get-item handle-path)
-                  file (and handle (.getFile handle))]
-            (when file
-              (p/let [url (js/URL.createObjectURL file)]
-                (swap! *assets-url-cache assoc (keyword handle-path) url)
-                url))))))))
+        (util/electron?)
+        (str "assets://" full-path)
+
+        (mobile-util/native-platform?)
+        (mobile-util/convert-file-src full-path)
+
+        :else
+        (let [handle-path (str "handle" full-path)
+              cached-url  (get @*assets-url-cache (keyword handle-path))]
+          (if cached-url
+            (p/resolved cached-url)
+            (p/let [handle (idb/get-item handle-path)
+                    file   (and handle (.getFile handle))]
+              (when file
+                (p/let [url (js/URL.createObjectURL file)]
+                  (swap! *assets-url-cache assoc (keyword handle-path) url)
+                  url)))))))))
 
 (defn delete-asset-of-block!
   [{:keys [repo href full-text block-id local? delete-local?] :as _opts}]
@@ -1424,7 +1437,8 @@
     (save-block! repo block content)
     (when (and local? delete-local?)
       ;; FIXME: should be relative to current block page path
-      (when-let [href (if (util/electron?) href (second (re-find #"\((.+)\)$" full-text)))]
+      (when-let [href (if (util/electron?) href
+                        (second (re-find #"\((.+)\)$" full-text)))]
         (fs/unlink! repo
                     (config/get-repo-path
                      repo (-> href
@@ -1451,11 +1465,16 @@
       (-> (save-assets! block repo (js->clj files))
           (p/then
            (fn [res]
-             (when-let [[asset-file-name file full-file-path] (and (seq res) (first res))]
+             (when-let [[asset-file-name file full-file-path matched-alias] (and (seq res) (first res))]
                (let [image? (util/ext-of-image? asset-file-name)]
                  (insert-command!
                   id
-                  (get-asset-file-link format (resolve-relative-path (or full-file-path asset-file-name))
+                  (get-asset-file-link format
+                                       (if matched-alias
+                                         (str
+                                          (if image? "../assets/" "")
+                                          "@" (:name matched-alias) "/" asset-file-name)
+                                         (resolve-relative-path (or full-file-path asset-file-name)))
                                        (if file (.-name file) (if image? "image" "asset"))
                                        image?)
                   format
@@ -1984,7 +2003,8 @@
    (when-let [db-id (if (integer? db-id)
                       db-id
                       (:db/id (db-model/get-template-by-name (name db-id))))]
-     (let [repo (state/get-current-repo)
+     (let [journal? (:block/journal? target)
+           repo (state/get-current-repo)
            target (or target (state/get-edit-block))
            block (db/entity db-id)
            format (:block/format block)
@@ -2027,12 +2047,14 @@
                          :else
                          true)]
          (outliner-tx/transact!
-          {:outliner-op :insert-blocks}
-          (save-current-block!)
-          (let [result (outliner-core/insert-blocks! blocks'
-                                                     target
-                                                     (assoc opts :sibling? sibling?'))]
-            (edit-last-block-after-inserted! result))))))))
+           {:outliner-op :insert-blocks
+            :created-from-journal-template? journal?}
+           (save-current-block!)
+           (let [result (outliner-core/insert-blocks! blocks'
+                                                      target
+                                                      (assoc opts
+                                                             :sibling? sibling?'))]
+             (edit-last-block-after-inserted! result))))))))
 
 (defn template-on-chosen-handler
   [element-id]
@@ -2217,55 +2239,6 @@
                       (state/set-edit-content! (state/get-edit-input-id) value')
                       (cursor/move-cursor-to input cursor'))))))))))))
 
-(defn toggle-list!
-  []
-  (when-not (auto-complete?)
-    (let [{:keys [block]} (get-state)]
-      (when block
-        (let [input (state/get-input)
-              format (or (db/get-page-format (state/get-current-page)) (state/get-preferred-format))
-              new-unordered-bullet (case format :org "-" "*")
-              current-pos (cursor/pos input)
-              content (state/get-edit-content)
-              pos (atom current-pos)]
-          (if-let [item (thingatpt/list-item-at-point input)]
-            (let [{:keys [ordered]} item
-                  list-beginning-pos (list/list-beginning-pos input)
-                  list-end-pos (list/list-end-pos input)
-                  list (subs content list-beginning-pos list-end-pos)
-                  items (string/split-lines list)
-                  splitter-reg (if ordered #"[\d]*\.\s*" #"[-\*]{1}\s*")
-                  items-without-bullet (vec (map #(last (string/split % splitter-reg 2)) items))
-                  new-list (string/join "\n"
-                                        (if ordered
-                                          (map #(str new-unordered-bullet " " %) items-without-bullet)
-                                          (map-indexed #(str (inc %1) ". " %2) items-without-bullet)))
-                  index-of-current-item (inc (.indexOf items-without-bullet
-                                                       (last (string/split (:raw-content item) splitter-reg 2))))
-                  numbers-length (->> (map-indexed
-                                       #_:clj-kondo/ignore
-                                       #(str (inc %1) ". ")
-                                       (subvec items-without-bullet 0 index-of-current-item))
-                                      string/join
-                                      count)
-                  pos-diff (- numbers-length (* 2 index-of-current-item))]
-              (delete-and-update input list-beginning-pos list-end-pos)
-              (insert new-list)
-              (reset! pos (if ordered
-                            (- current-pos pos-diff)
-                            (+ current-pos pos-diff))))
-            (let [prev-item (list/get-prev-item input)]
-              (cursor/move-cursor-down input)
-              (cursor/move-cursor-to-line-beginning input)
-              (if prev-item
-                (let [{:keys [bullet ordered]} prev-item
-                      current-bullet (if ordered (str (inc bullet) ".") bullet)]
-                  (insert (str current-bullet " "))
-                  (reset! pos (+ current-pos (count current-bullet) 1)))
-                (do (insert (str new-unordered-bullet " "))
-                    (reset! pos (+ current-pos 2))))))
-          (cursor/move-cursor-to input @pos))))))
-
 (defn toggle-page-reference-embed
   [parent-id]
   (let [{:keys [block]} (get-state)]
@@ -2406,6 +2379,13 @@
       (.preventDefault e)
       (keydown-new-line))))
 
+(defn- scroll-to-block
+  [block]
+  (when block
+    (when-not (util/element-visible? block)
+      (.scrollIntoView block #js {:behavior "smooth"
+                                  :block "center"}))))
+
 (defn- select-first-last
   "Select first or last block in viewpoint"
   [direction]
@@ -2413,7 +2393,7 @@
         block (->> (util/get-blocks-noncollapse)
                    (f))]
     (when block
-      (.scrollIntoView block #js {:behavior "smooth" :block "center"})
+      (scroll-to-block block)
       (state/exit-editing-and-set-selected-blocks! [block]))))
 
 (defn- select-up-down [direction]
@@ -2426,7 +2406,7 @@
             :down util/get-next-block-non-collapsed)
         sibling-block (f selected)]
     (when (and sibling-block (dom/attr sibling-block "blockid"))
-      (.scrollIntoView sibling-block #js {:behavior "smooth" :block "center"})
+      (scroll-to-block sibling-block)
       (state/exit-editing-and-set-selected-blocks! [sibling-block]))))
 
 (defn- move-cross-boundrary-up-down
@@ -3050,9 +3030,15 @@
   (when (state/editing?)
     (keydown-backspace-handler false e)))
 
+(defn- slide-focused?
+  []
+  (some-> (first (dom/by-class "reveal"))
+          (dom/has-class? "focused")))
+
 (defn shortcut-up-down [direction]
   (fn [e]
-    (when-not (auto-complete?)
+    (when (and (not (auto-complete?))
+               (not (slide-focused?)))
       (util/stop e)
       (cond
         (state/editing?)
@@ -3061,7 +3047,8 @@
         (state/selection?)
         (select-up-down direction)
 
-        :else
+        ;; if there is an edit-input-id set, we are probably still on editing mode, that is not fully initialized
+        (not (state/get-edit-input-id))
         (select-first-last direction)))
     nil))
 
@@ -3492,6 +3479,7 @@
   (if (= format :markdown)
     (let [repo (state/get-current-repo)
           block (db/entity [:block/uuid block-id])
+          heading (if (true? heading) 2 heading)
           content' (commands/set-markdown-heading (:block/content block) heading)]
       (save-block! repo block-id content'))
     (do

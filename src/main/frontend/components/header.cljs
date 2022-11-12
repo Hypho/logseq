@@ -75,12 +75,12 @@
           :options {:on-click state/open-settings!}
           :icon (ui/icon "settings")})
 
-       (when plugin-handler/lsp-enabled?
+       (when config/lsp-enabled?
          {:title (t :plugins)
           :options {:on-click #(plugin-handler/goto-plugins-dashboard!)}
           :icon (ui/icon "apps")})
 
-       (when plugin-handler/lsp-enabled?
+       (when config/lsp-enabled?
          {:title (t :themes)
           :options {:on-click #(plugins/open-select-theme!)}
           :icon (ui/icon "palette")})
@@ -152,6 +152,7 @@
   [{:keys [open-fn current-repo default-home new-block-mode]}]
   (let [repos (->> (state/sub [:me :repos])
                    (remove #(= (:url %) config/local-repo)))
+        _ (state/sub [:user/info :UserGroups])
         electron-mac? (and util/mac? (util/electron?))
         show-open-folder? (and (nfs/supported?)
                                (or (empty? repos)
@@ -196,10 +197,9 @@
              (ui/icon "chevron-left" {:size 26})])))]
 
      [:div.r.flex
-      (when (and sync-enabled?
-                 current-repo
+      (when (and current-repo
                  (not (config/demo-graph? current-repo))
-                 (user-handler/alpha-user?))
+                 (user-handler/alpha-or-beta-user?))
         (fs-sync/indicator))
 
       (when (and (not= (state/get-current-route) :home)
@@ -209,7 +209,7 @@
       (when sync-enabled?
         (login))
 
-      (when plugin-handler/lsp-enabled?
+      (when config/lsp-enabled?
         (plugins/hook-ui-items :toolbar))
 
       (when (util/electron?)
@@ -227,7 +227,7 @@
             (t :on-boarding/add-graph)])])
 
       (when config/publishing?
-        [:button.text-sm.font-medium.button {:href (rfe/href :graph)}
+        [:a.text-sm.font-medium.button {:href (rfe/href :graph)}
          (t :graph)])
 
       (dropdown-menu {:t            t
