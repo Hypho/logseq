@@ -36,6 +36,9 @@
 ;; :inactive key is for commands that are not active for a given platform or feature condition
 ;; Avoid using single letter shortcuts to allow chords that start with those characters
 (def ^:large-vars/data-var all-default-keyboard-shortcuts
+  ;; BUG: Actually, "enter" is registered by mixin behind a "when inputing" guard
+  ;; So this setting item does not cover all cases.
+  ;; See-also: frontend.components.datetime/time-repeater
   {:date-picker/complete         {:binding "enter"
                                   :fn      ui-handler/shortcut-complete}
 
@@ -241,6 +244,9 @@
    :editor/select-all-blocks       {:binding "mod+shift+a"
                                     :fn      editor-handler/select-all-blocks!}
 
+   :editor/select-parent           {:binding "mod+a"
+                                    :fn      editor-handler/select-parent}
+
    :editor/zoom-in                 {:binding (if mac? "mod+." "alt+right")
                                     :fn      editor-handler/zoom-in!}
 
@@ -257,7 +263,7 @@
 
    :go/search                      {:binding "mod+k"
                                     :fn      #(do
-                                                (editor-handler/escape-editing)
+                                                (editor-handler/escape-editing false)
                                                 (route-handler/go-to-search! :global))}
 
    :go/electron-find-in-page       {:binding "mod+f"
@@ -287,6 +293,9 @@
    :sidebar/open-today-page        {:binding (if mac? "mod+shift+j" "alt+shift+j")
                                     :fn      page-handler/open-today-in-sidebar}
 
+   :sidebar/close-top              {:binding "c t"
+                                    :fn      #(state/sidebar-remove-block! 0)}
+
    :sidebar/clear                  {:binding "mod+c mod+c"
                                     :fn      #(do
                                                 (state/clear-sidebar-blocks!)
@@ -298,7 +307,7 @@
    :command-palette/toggle         {:binding "mod+shift+p"
                                     :fn      #(do
                                                 (editor-handler/escape-editing)
-                                                (state/toggle! :ui/command-palette-open?))}
+                                                (state/pub-event! [:modal/command-palette]))}
 
    :graph/export-as-html           {:fn #(export-handler/export-repo-as-html!
                                           (state/get-current-repo))
@@ -322,7 +331,7 @@
 
    :graph/re-index                 {:fn (fn []
                                           (p/let [multiple-windows? (ipc/ipc "graphHasMultipleWindows" (state/get-current-repo))]
-                                                 (state/pub-event! [:graph/ask-for-re-index (atom multiple-windows?) nil])))
+                                            (state/pub-event! [:graph/ask-for-re-index (atom multiple-windows?) nil])))
                                     :binding false}
 
    :command/run                    {:binding "mod+shift+1"
@@ -420,7 +429,7 @@
    :ui/toggle-cards                 {:binding "t c"
                                      :fn      ui-handler/toggle-cards!}
 
-   :git/commit                      {:binding "c"
+   :git/commit                      {:binding "mod+g c"
                                      :fn      commit/show-commit-modal!}})
 
 (let [keyboard-shortcuts
@@ -496,8 +505,7 @@
 
     :shortcut.handler/editor-global
     (->
-     (build-category-map [:command/run
-                          :command-palette/toggle
+     (build-category-map [
                           :graph/export-as-html
                           :graph/open
                           :graph/remove
@@ -516,6 +524,7 @@
                           :editor/open-edit
                           :editor/select-block-up
                           :editor/select-block-down
+                          :editor/select-parent
                           :editor/delete-selection
                           :editor/expand-block-children
                           :editor/collapse-block-children
@@ -545,7 +554,9 @@
                           :go/forward
                           :search/re-index
                           :sidebar/open-today-page
-                          :sidebar/clear])
+                          :sidebar/clear
+                          :command/run
+                          :command-palette/toggle])
      (with-meta {:before m/prevent-default-behavior}))
 
     :shortcut.handler/misc
@@ -582,7 +593,9 @@
                           :ui/install-plugins-from-file
                           :editor/toggle-open-blocks
                           :ui/toggle-cards
-                          :git/commit])
+                          :git/commit
+                          :sidebar/close-top
+                          ])
      (with-meta {:before m/enable-when-not-editing-mode!}))}))
 
 ;; To add a new entry to this map, first add it here and then
@@ -595,6 +608,7 @@
     :editor/indent
     :editor/outdent
     :editor/select-all-blocks
+    :editor/select-parent
     :go/search
     :go/search-in-page
     :go/electron-find-in-page
@@ -672,6 +686,7 @@
    :shortcut.category/block-selection
    [:editor/open-edit
     :editor/select-all-blocks
+    :editor/select-parent
     :editor/select-block-up
     :editor/select-block-down
     :editor/delete-selection]
@@ -703,6 +718,7 @@
     :graph/add
     :graph/save
     :graph/re-index
+    :sidebar/close-top
     :sidebar/clear
     :sidebar/open-today-page
     :search/re-index

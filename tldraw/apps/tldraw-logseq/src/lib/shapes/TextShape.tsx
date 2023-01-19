@@ -237,12 +237,12 @@ export class TextShape extends TLTextShape<TextShapeProps> {
     this.onResetBounds()
   }
 
-  ReactIndicator = observer(() => {
+  ReactIndicator = observer(({ isEditing }: TLComponentProps) => {
     const {
       props: { borderRadius },
       bounds,
     } = this
-    return (
+    return isEditing ? null : (
       <rect
         width={bounds.width}
         height={bounds.height}
@@ -309,7 +309,7 @@ export class TextShape extends TLTextShape<TextShapeProps> {
   getShapeSVGJsx() {
     if (isSafari()) {
       // Safari doesn't support foreignObject well
-      return super.getShapeSVGJsx(null);
+      return super.getShapeSVGJsx(null)
     }
     const {
       props: { text, stroke, fontSize, fontFamily },

@@ -16,9 +16,13 @@
 (goog-define PUBLISHING false)
 (defonce publishing? PUBLISHING)
 
+(goog-define REVISION "unknown")
+(defonce revison REVISION)
+
 (reset! state/publishing? publishing?)
 
-(def test? false)
+(goog-define TEST false)
+(def test? TEST)
 
 (goog-define ENABLE-FILE-SYNC-PRODUCTION false)
 
@@ -27,13 +31,15 @@
       (def LOGIN-URL
         "https://logseq-prod.auth.us-east-1.amazoncognito.com/login?client_id=3c7np6bjtb4r1k1bi9i049ops5&response_type=code&scope=email+openid+phone&redirect_uri=logseq%3A%2F%2Fauth-callback")
       (def API-DOMAIN "api.logseq.com")
-      (def WS-URL "wss://ws.logseq.com/file-sync?graphuuid=%s"))
+      (def WS-URL "wss://ws.logseq.com/file-sync?graphuuid=%s")
+      (def COGNITO-IDP "https://cognito-idp.us-east-1.amazonaws.com/"))
 
   (do (def FILE-SYNC-PROD? false)
       (def LOGIN-URL
         "https://logseq-test2.auth.us-east-2.amazoncognito.com/login?client_id=3ji1a0059hspovjq5fhed3uil8&response_type=code&scope=email+openid+phone&redirect_uri=logseq%3A%2F%2Fauth-callback")
       (def API-DOMAIN "api-dev.logseq.com")
-      (def WS-URL "wss://ws-dev.logseq.com/file-sync?graphuuid=%s")))
+      (def WS-URL "wss://ws-dev.logseq.com/file-sync?graphuuid=%s")
+      (def COGNITO-IDP "https://cognito-idp.us-east-2.amazonaws.com/")))
 
 ;; Feature flags
 ;; =============
@@ -65,11 +71,6 @@
   (if dev?
     "http://localhost:3000"
     (util/format "https://%s.com" app-name)))
-
-(def api
-  (if dev?
-    "http://localhost:3000/api/v1/"
-    (str website "/api/v1/")))
 
 (def asset-domain (util/format "https://asset.%s.com"
                                app-name))
@@ -105,14 +106,12 @@
 
 (def media-formats (set/union (gp-config/img-formats) audio-formats))
 
-(def html-render-formats
-  #{:adoc :asciidoc})
-
 (defn extname-of-supported?
   ([input] (extname-of-supported?
             input
             [image-formats doc-formats audio-formats
-             video-formats markup-formats html-render-formats]))
+             video-formats markup-formats
+             (gp-config/text-formats)]))
   ([input formats]
    (when-let [input (some->
                      (cond-> input
@@ -131,7 +130,7 @@
    *** Warning!!! ***
    For UX logic only! Don't use for FS logic
    iPad / Android Pad doesn't trigger!
-   
+
    Same as config/mobile?"
   (when-not util/node-test?
     (util/safe-re-find #"Mobi" js/navigator.userAgent)))

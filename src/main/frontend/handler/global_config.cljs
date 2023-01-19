@@ -5,9 +5,9 @@
   (:require [frontend.fs :as fs]
             [frontend.handler.common.file :as file-common-handler]
             [frontend.state :as state]
-            [cljs.reader :as reader]
             [promesa.core :as p]
             [shadow.resource :as rc]
+            [clojure.edn :as edn]
             [electron.ipc :as ipc]
             ["path" :as path]))
 
@@ -32,7 +32,7 @@
 
 (defn- set-global-config-state!
   [content]
-  (let [config (reader/read-string content)]
+  (let [config (edn/read-string content)]
     (state/set-global-config! config)
     config))
 

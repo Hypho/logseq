@@ -12,10 +12,12 @@
             [frontend.state :as state]
             [frontend.handler.user :as user]
             [frontend.fs :as fs]
+            [frontend.pubsub :as pubsub]
             [cljs-time.coerce :as tc]
             [cljs-time.core :as t]
             [frontend.storage :as storage]
-            [logseq.graph-parser.util :as gp-util]))
+            [logseq.graph-parser.util :as gp-util]
+            [lambdaisland.glogi :as log]))
 
 (def *beta-unavailable? (volatile! false))
 
@@ -131,7 +133,7 @@
        (when-not (instance? ExceptionInfo r)
          (path/join "logseq" "version-files" key))))))
 
-(defn- list-file-local-versions
+(defn- <list-file-local-versions
   [page]
   (go
     (when-let [path (-> page :block/file :file/path)]
@@ -145,15 +147,21 @@
             version-file-paths (<! (p->c (fs/readdir version-files-dir :path-only? true)))]
         (when-not (instance? ExceptionInfo version-file-paths)
           (when (seq version-file-paths)
-            (mapv
-             (fn [path]
-               (let [create-time
-                     (-> (path/parse path)
-                         (js->clj :keywordize-keys true)
-                         :name
-                         (#(tf/parse (tf/formatter "yyyy-MM-dd'T'HH_mm_ss.SSSZZ") %)))]
-                 {:create-time create-time :path path :relative-path (string/replace-first path base-path "")}))
-             version-file-paths)))))))
+            (->>
+             (mapv
+              (fn [path]
+                (try
+                  (let [create-time
+                        (-> (path/parse path)
+                            (js->clj :keywordize-keys true)
+                            :name
+                            (#(tf/parse (tf/formatter "yyyy-MM-dd'T'HH_mm_ss.SSSZZ") %)))]
+                    {:create-time create-time :path path :relative-path (string/replace-first path base-path "")})
+                  (catch :default e
+                    (log/error :page-history/parse-format-error e)
+                    nil)))
+              version-file-paths)
+             (remove nil?))))))))
 
 (defn fetch-page-file-versions [graph-uuid page]
   []
@@ -167,7 +175,7 @@
         (go
           (let [version-list       (:VersionList
                                     (<! (sync/<get-remote-file-versions sync/remoteapi graph-uuid path*)))
-                local-version-list (<! (list-file-local-versions page))
+                local-version-list (<! (<list-file-local-versions page))
                 all-version-list   (->> (concat version-list local-version-list)
                                         (sort-by #(or (:CreateTime %)
                                                       (:create-time %))
@@ -190,7 +198,7 @@
 (defn setup-file-sync-event-listeners
   []
   (let [c     (async/chan 1)
-        p     sync/sync-events-publication
+        p     pubsub/sync-events-pub
         topics [:finished-local->remote :finished-remote->local :start]]
     (doseq [topic topics]
       (async/sub p topic c))

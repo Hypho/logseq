@@ -24,7 +24,6 @@
             [promesa.core :as p]
             [shadow.resource :as rc]
             [frontend.db.persist :as db-persist]
-            [logseq.graph-parser.util :as gp-util]
             [logseq.graph-parser :as graph-parser]
             [logseq.graph-parser.config :as gp-config]
             [electron.ipc :as ipc]
@@ -181,8 +180,10 @@
         chan (async/to-chan! indexed-files)
         graph-added-chan (async/promise-chan)
         total (count supported-files)
-        large-graph? (> total 1000)]
-    (when (seq delete-data) (db/transact! repo-url delete-data))
+        large-graph? (> total 1000)
+        *page-names (atom #{})
+        *page-name->path (atom {})]
+    (when (seq delete-data) (db/transact! repo-url delete-data {:delete-files? true}))
     (state/set-current-repo! repo-url)
     (state/set-parsing-state! {:total (count supported-files)})
     ;; Synchronous for tests for not breaking anything
@@ -215,7 +216,25 @@
                           (assoc opts' :skip-db-transact? false)
                           opts')
                   result (parse-and-load-file! repo-url file opts')
-                  tx' (if whiteboard? tx (concat tx result))
+                  page-name (some (fn [x] (when (and (map? x) (:block/original-name x )
+                                                     (= (:file/path file) (:file/path (:block/file x))))
+                                            (:block/name x))) result)
+                  page-exists? (and page-name (get @*page-names page-name))
+                  tx' (cond
+                        whiteboard? tx
+                        page-exists? (do
+                                       (state/pub-event! [:notification/show
+                                                          {:content [:div
+                                                                     (util/format "The file \"%s\" will be skipped because another file \"%s\" has the same page title."
+                                                                                  (:file/path file)
+                                                                                  (get @*page-name->path page-name))]
+                                                           :status :warning
+                                                           :clear? false}])
+                                       tx)
+                        :else (concat tx result))
+                  _ (when (and page-name (not page-exists?))
+                      (swap! *page-names conj page-name)
+                      (swap! *page-name->path assoc page-name (:file/path file)))
                   tx' (if (or whiteboard? (zero? (rem (inc idx) 100)))
                         (do (db/transact! repo-url tx' {:from-disk? true})
                             [])
@@ -242,9 +261,9 @@
   (state/set-parsing-state! {:graph-loading? true})
   (let [config (or (when-let [content (some-> (first (filter #(= (config/get-repo-config-path repo-url) (:file/path %)) nfs-files))
                                               :file/content)]
-                     (repo-config-handler/read-repo-config repo-url content))
+                     (repo-config-handler/read-repo-config content))
                    (state/get-config repo-url))
-        ;; NOTE: Use config while parsing. Make sure it's the corrent journal title format
+        ;; NOTE: Use config while parsing. Make sure it's the current journal title format
         _ (state/set-config! repo-url config)
         relate-path-fn (fn [m k]
                          (some-> (get m k)
@@ -282,7 +301,7 @@
                              [])
               add-or-modify-files (some->>
                                    (concat modify-files add-files)
-                                   (gp-util/remove-nils))
+                                   (remove nil?))
               options {:delete-files (concat delete-files delete-pages)
                        :delete-blocks delete-blocks
                        :re-render? true}]
@@ -404,9 +423,9 @@
        (on-success)))
     (p/catch (fn [error]
                (js/console.error error)
-               (state/pub-event! [:instrument {:type :db/persist-failed
-                                               :payload {:error-str (str error)
-                                                         :error error}}])
+               (state/pub-event! [:capture-error
+                                  {:error error
+                                   :payload {:type :db/persist-failed}}])
                (when on-error
                  (on-error)))))))
 

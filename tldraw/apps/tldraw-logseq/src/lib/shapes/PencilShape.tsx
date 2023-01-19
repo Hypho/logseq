@@ -2,7 +2,7 @@
 import { SvgPathUtils, TLDrawShape, TLDrawShapeProps, getComputedColor } from '@tldraw/core'
 import { SVGContainer, TLComponentProps } from '@tldraw/react'
 import Vec from '@tldraw/vec'
-import { computed, makeObservable } from 'mobx'
+import { action, computed, makeObservable } from 'mobx'
 import { observer } from 'mobx-react-lite'
 import {
   getStrokeOutlinePoints,
@@ -10,10 +10,21 @@ import {
   StrokeOptions,
   StrokePoint,
 } from 'perfect-freehand'
+import type { SizeLevel } from '.'
 import { CustomStyleProps, withClampedStyles } from './style-props'
 
 export interface PencilShapeProps extends TLDrawShapeProps, CustomStyleProps {
   type: 'pencil'
+  scaleLevel?: SizeLevel
+}
+
+const levelToScale = {
+  xs: 1,
+  sm: 1.6,
+  md: 2,
+  lg: 3.2,
+  xl: 4.8,
+  xxl: 6,
 }
 
 const simulatePressureSettings: StrokeOptions = {
@@ -108,6 +119,18 @@ export class PencilShape extends TLDrawShape<PencilShapeProps> {
     )
   })
 
+  @computed get scaleLevel() {
+    return this.props.scaleLevel ?? 'md'
+  }
+
+  @action setScaleLevel = async (v?: SizeLevel) => {
+    this.update({
+      scaleLevel: v,
+      strokeWidth: levelToScale[v ?? 'md'],
+    })
+    this.onResetBounds()
+  }
+
   ReactIndicator = observer(() => {
     const { pointsPath } = this
     return <path d={pointsPath} />
@@ -131,8 +154,8 @@ export class PencilShape extends TLDrawShape<PencilShapeProps> {
         strokeWidth={strokeWidth / 2}
         strokeLinejoin="round"
         strokeLinecap="round"
-        stroke={getComputedColor(stroke, 'stroke')}
-        fill={getComputedColor(stroke, 'stroke')}
+        stroke={getComputedColor(stroke, 'text')}
+        fill={getComputedColor(stroke, 'text')}
         strokeDasharray={strokeType === 'dashed' ? '12 4' : undefined}
       />
     )

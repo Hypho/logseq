@@ -66,10 +66,14 @@
                                       (block-ids (:block/uuid (:block/parent block)))
                                       (not (gp-whiteboard/shape-block? block)))))
                                existing-blocks)
+        ;; always recalcuate refs for now. 
+        ;; todo: optimize in frontend.modules.outliner.pipeline/compute-block-path-refs?
+        refs-tx (mapcat (fn [m] [[:db/retract (:db/id m) :block/path-refs]
+                                 [:db/retract (:db/id m) :block/refs]]) existing-blocks)
         delete-blocks-tx (mapv (fn [s] [:db/retractEntity (:db/id s)]) delete-blocks)
         page-and-blocks (->> (cons page-block blocks)
                              (map outliner/block-with-timestamps))]
-    (concat page-and-blocks delete-blocks-tx)))
+    (concat refs-tx page-and-blocks delete-blocks-tx)))
 
 (defn- get-whiteboard-clj [page-name]
   (when (model/page-exists? page-name)
@@ -78,7 +82,7 @@
           blocks (model/get-page-blocks-no-cache page-name)]
       [page-block blocks])))
 
-(defn- whiteboard-clj->tldr [page-block blocks shape-id]
+(defn- whiteboard-clj->tldr [page-block blocks]
   (let [id (str (:block/uuid page-block))
         shapes (->> blocks
                     (filter gp-whiteboard/shape-block?)
@@ -89,10 +93,10 @@
         tldr-page (dissoc tldr-page :assets)]
     (clj->js {:currentPageId id
               :assets (or assets #js[])
-              :selectedIds (if (not-empty shape-id) #js[shape-id] #js[])
+              :selectedIds #js[]
               :pages [(merge tldr-page
                              {:id id
-                              :name "page"
+                              :name (:block/name page-block)
                               :shapes shapes})]})))
 
 (defn transact-tldr! [page-name tldr]
@@ -154,31 +158,30 @@
   "Given the block uuid, add a new shape to the referenced block.
    By default it will be placed next to the given shape id"
   [block-uuid source-shape & {:keys [link? bottom?]}]
-  (let [app (state/active-tldraw-app)
-        ^js api (.-api app)
-        point (-> (.getShapeById app source-shape)
-                  (.-bounds)
-                  ((fn [bounds] (if bottom?
-                                  [(.-minX bounds) (+ 64 (.-maxY bounds))]
-                                  [(+ 64 (.-maxX bounds)) (.-minY bounds)]))))
-        shape (->logseq-portal-shape block-uuid point)]
-    (when (uuid? block-uuid) (editor-handler/set-blocks-id! [block-uuid]))
-    (.createShapes api (clj->js shape))
-    (when link?
-      (.createNewLineBinding api source-shape (:id shape)))))
+  (when-let [app (state/active-tldraw-app)]
+    (let [^js api (.-api app)
+          point (-> (.getShapeById app source-shape)
+                    (.-bounds)
+                    ((fn [bounds] (if bottom?
+                                    [(.-minX bounds) (+ 64 (.-maxY bounds))]
+                                    [(+ 64 (.-maxX bounds)) (.-minY bounds)]))))
+          shape (->logseq-portal-shape block-uuid point)]
+      (when (uuid? block-uuid) (editor-handler/set-blocks-id! [block-uuid]))
+      (.createShapes api (clj->js shape))
+      (when link?
+        (.createNewLineBinding api source-shape (:id shape))))))
 
 (defn page-name->tldr!
   ([page-name]
-   (page-name->tldr! page-name nil))
-  ([page-name shape-id]
-   (if page-name
-     (if-let [[page-block blocks] (get-whiteboard-clj page-name)]
-       (whiteboard-clj->tldr page-block blocks shape-id)
-       (create-new-whiteboard-page! page-name))
-     (create-new-whiteboard-page! nil))))
+   (clj->js
+    (if page-name
+      (if-let [[page-block blocks] (get-whiteboard-clj page-name)]
+        (whiteboard-clj->tldr page-block blocks)
+        (create-new-whiteboard-page! page-name))
+      (create-new-whiteboard-page! nil)))))
 
 (defn- get-whiteboard-blocks
-  "Given a page, return all the logseq blocks (exlude all shapes)"
+  "Given a page, return all the logseq blocks (exclude all shapes)"
   [page-name]
   (let [blocks (model/get-page-blocks-no-cache page-name)]
     (remove gp-whiteboard/shape-block? blocks)))
@@ -261,4 +264,4 @@
           (clone-whiteboard-from-edn edn api)
           (state/set-onboarding-whiteboard! true))
         (p/catch
-         (fn [e] (js/console.warn "Faield to populate onboarding whiteboard" e))))))
+         (fn [e] (js/console.warn "Failed to populate onboarding whiteboard" e))))))

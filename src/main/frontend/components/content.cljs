@@ -6,18 +6,14 @@
             [frontend.components.editor :as editor]
             [frontend.components.page-menu :as page-menu]
             [frontend.components.export :as export]
-            [frontend.config :as config]
             [frontend.context.i18n :refer [t]]
             [frontend.db :as db]
             [frontend.extensions.srs :as srs]
-            [frontend.format :as format]
-            [frontend.format.protocol :as protocol]
             [frontend.handler.common :as common-handler]
             [frontend.handler.editor :as editor-handler]
             [frontend.handler.image :as image-handler]
             [frontend.handler.notification :as notification]
             [frontend.handler.page :as page-handler]
-            [frontend.handler.whiteboard :as whiteboard-handler]
             [frontend.mixins :as mixins]
             [frontend.state :as state]
             [frontend.ui :as ui]
@@ -31,29 +27,6 @@
 
 ;; TODO i18n support
 
-(defn- set-format-js-loading!
-  [format value]
-  (when format
-    (swap! state/state assoc-in [:format/loading format] value)))
-
-(defn- lazy-load
-  [format]
-  (let [format (gp-util/normalize-format format)]
-    (when-let [record (format/get-format-record format)]
-      (when-not (protocol/loaded? record)
-        (set-format-js-loading! format true)
-        (protocol/lazyLoad record
-                           (fn [_result]
-                             (set-format-js-loading! format false)))))))
-
-(defn lazy-load-js
-  [state]
-  (when-let [format (:format (last (:rum/args state)))]
-    (let [loader? (contains? config/html-render-formats format)]
-      (when loader?
-        (when-not (format/loaded? format)
-          (lazy-load format))))))
-
 (rum/defc custom-context-menu-content
   []
   [:.menu-links-wrapper
@@ -61,6 +34,12 @@
     {:key "cut"
      :on-click #(editor-handler/cut-selection-blocks true)}
     "Cut"
+    nil)
+   (ui/menu-link
+    {:key      "delete"
+     :on-click #(do (editor-handler/delete-selection %)
+                    (state/hide-custom-context-menu!))}
+    "Delete"
     nil)
    (ui/menu-link
     {:key "copy"
@@ -214,7 +193,7 @@
           {:key      "Open in sidebar"
            :on-click (fn [_e]
                        (editor-handler/open-block-in-sidebar! block-id))}
-          "Open in sidebar"
+          (t :content/open-in-sidebar)
           ["⇧" "click"])
 
          [:hr.menu-separator]
@@ -223,14 +202,14 @@
           {:key      "Copy block ref"
            :on-click (fn [_e]
                        (editor-handler/copy-block-ref! block-id block-ref/->block-ref))}
-          "Copy block ref"
+          (t :content/copy-block-ref)
           nil)
 
          (ui/menu-link
           {:key      "Copy block embed"
            :on-click (fn [_e]
                        (editor-handler/copy-block-ref! block-id #(util/format "{{embed ((%s))}}" %)))}
-          "Copy block embed"
+          (t :content/copy-block-emebed)
           nil)
 
           ;; TODO Logseq protocol mobile support
@@ -257,6 +236,12 @@
            :on-click (fn [_e]
                        (editor-handler/cut-block! block-id))}
           "Cut"
+          nil)
+
+         (ui/menu-link
+          {:key      "delete"
+           :on-click #(editor-handler/delete-block-aux! block true)}
+          "Delete"
           nil)
 
          [:hr.menu-separator]
@@ -380,38 +365,36 @@
                             block-id (d/attr target "blockid")
                             {:keys [block block-ref]} (state/sub :block-ref/context)
                             {:keys [page]} (state/sub :page-title/context)]
-                        ;; TODO: Find a better way to handle this on whiteboards
-                        (when-not (whiteboard-handler/inside-portal? target)
-                          (cond
-                            page
-                            (do
-                              (common-handler/show-custom-context-menu!
-                               e
-                               (page-title-custom-context-menu-content page))
-                              (state/set-state! :page-title/context nil))
-
-                            block-ref
-                            (do
-                              (common-handler/show-custom-context-menu!
-                               e
-                               (block-ref-custom-context-menu-content block block-ref))
-                              (state/set-state! :block-ref/context nil))
-
-                            (and (state/selection?) (not (d/has-class? target "bullet")))
+                        (cond
+                          page
+                          (do
                             (common-handler/show-custom-context-menu!
                              e
-                             (custom-context-menu-content))
+                             (page-title-custom-context-menu-content page))
+                            (state/set-state! :page-title/context nil))
 
-                            (and block-id (parse-uuid block-id))
-                            (let [block (.closest target ".ls-block")]
-                              (when block
-                                (util/select-highlight! [block]))
-                              (common-handler/show-custom-context-menu!
-                               e
-                               (block-context-menu-content target (uuid block-id))))
+                          block-ref
+                          (do
+                            (common-handler/show-custom-context-menu!
+                             e
+                             (block-ref-custom-context-menu-content block block-ref))
+                            (state/set-state! :block-ref/context nil))
 
-                            :else
-                            nil)))))))
+                          (and (state/selection?) (not (d/has-class? target "bullet")))
+                          (common-handler/show-custom-context-menu!
+                           e
+                           (custom-context-menu-content))
+
+                          (and block-id (parse-uuid block-id))
+                          (let [block (.closest target ".ls-block")]
+                            (when block
+                              (util/select-highlight! [block]))
+                            (common-handler/show-custom-context-menu!
+                             e
+                             (block-context-menu-content target (uuid block-id))))
+
+                          :else
+                          nil))))))
   [id {:keys [hiccup]}]
   [:div {:id id}
    (if hiccup
@@ -420,17 +403,13 @@
 
 (rum/defc non-hiccup-content < rum/reactive
   [id content on-click on-hide config format]
-  (let [edit? (state/sub [:editor/editing? id])
-        loading (state/sub :format/loading)]
+  (let [edit? (state/sub [:editor/editing? id])]
     (if edit?
       (editor/box {:on-hide on-hide
                    :format format}
                   id
                   config)
-      (let [format (gp-util/normalize-format format)
-            loading? (get loading format)
-            markup? (contains? config/html-render-formats format)
-            on-click (fn [e]
+      (let [on-click (fn [e]
                        (when-not (util/link? (gobj/get e "target"))
                          (util/stop e)
                          (editor-handler/reset-cursor-range! (gdom/getElement (str id)))
@@ -438,17 +417,12 @@
                          (state/set-edit-input-id! id)
                          (when on-click
                            (on-click e))))]
-        (cond
-          (and markup? loading?)
-          [:div "loading ..."]
-
-          :else                       ; other text formats
-          [:pre.cursor.content.pre-white-space
-           {:id id
-            :on-click on-click}
-           (if (string/blank? content)
-             [:div.cursor "Click to edit"]
-             content)])))))
+        [:pre.cursor.content.pre-white-space
+         {:id id
+          :on-click on-click}
+         (if (string/blank? content)
+           [:div.cursor "Click to edit"]
+           content)]))))
 
 (defn- set-draw-iframe-style!
   []
@@ -463,16 +437,12 @@
           (d/set-style! draw :margin-left (str (- (/ (- width 570) 2)) "px")))))))
 
 (rum/defcs content < rum/reactive
-  {:will-mount (fn [state]
-                 (lazy-load-js state)
-                 state)
-   :did-mount (fn [state]
+  {:did-mount (fn [state]
                 (set-draw-iframe-style!)
                 (image-handler/render-local-images!)
                 state)
    :did-update (fn [state]
                  (set-draw-iframe-style!)
-                 (lazy-load-js state)
                  (image-handler/render-local-images!)
                  state)}
   [state id {:keys [format
