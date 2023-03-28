@@ -251,27 +251,9 @@ jobs:
 
   nightly-release:
     if: ${{ github.event_name == 'schedule' || github.event.inputs.build-target == 'nightly' }}
-    needs: [ build-macos-x64, build-macos-arm64, build-linux, build-windows, build-android ]
+    needs: [ build-windows, build-android ]
     runs-on: ubuntu-20.04
     steps:
-      - name: Download MacOS x64 Artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: logseq-darwin-x64-builds
-          path: ./
-
-      - name: Download MacOS arm64 Artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: logseq-darwin-arm64-builds
-          path: ./
-
-      - name: Download The Linux Artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: logseq-linux-builds
-          path: ./
-
       - name: Download The Windows Artifact
         uses: actions/download-artifact@v3
         with:
@@ -286,9 +268,7 @@ jobs:
 
       - name: Generate SHA256 checksums
         run: |
-          sha256sum *-darwin-* > SHA256SUMS.txt
           sha256sum *-win-* >> SHA256SUMS.txt
-          sha256sum *-linux-* >> SHA256SUMS.txt
           sha256sum *.apk >> SHA256SUMS.txt
           cat SHA256SUMS.txt
 
@@ -309,10 +289,7 @@ jobs:
             It's unstable compared to the official releases, **use it with caution**!
           files: |
             ./SHA256SUMS.txt
-            ./*.zip
-            ./*.dmg
             ./*.exe
-            ./*.AppImage
             ./*.apk
 
   release:
@@ -350,9 +327,7 @@ jobs:
 
       - name: Generate SHA256 checksums
         run: |
-          sha256sum *-darwin-* > SHA256SUMS.txt
           sha256sum *-win-* >> SHA256SUMS.txt
-          sha256sum *-linux-* >> SHA256SUMS.txt
           sha256sum *.apk >> SHA256SUMS.txt
           sha256sum RELEASES >> SHA256SUMS.txt
           cat SHA256SUMS.txt
@@ -370,10 +345,6 @@ jobs:
           files: |
             ./VERSION
             ./SHA256SUMS.txt
-            ./*.zip
-            ./*.dmg
             ./*.exe
-            ./*.nupkg
             ./RELEASES
-            ./*.AppImage
             ./*.apk
