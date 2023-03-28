@@ -56,15 +56,20 @@ input::-webkit-inner-spin-button {
     position: relative;
   }
 
-  &-toolbar {
+  &-header {
+    display: flex;
+    justify-content: flex-end;
     position: absolute;
     top: 0;
-    right: 20px;
-    width: 90%;
-    height: 42px;
-    z-index: 5;
+    right: 10px; /* Allows clicking on the scrollbar */
+    width: calc(100% - 10px);
     padding: 8px 20px;
-    padding-right: 0;
+    z-index: 5;
+    -webkit-app-region: drag;
+  }
+
+  &-toolbar {
+    -webkit-app-region: no-drag;
 
     > .inner {
       display: flex;
@@ -101,7 +106,7 @@ input::-webkit-inner-spin-button {
 
         > .nu {
           padding-right: 4px;
-          
+
           input {
             user-select: inherit;
             width: 35px;
@@ -112,7 +117,7 @@ input::-webkit-inner-spin-button {
             border: none;
             background: transparent;
             font-size: 15px;
-            
+
             &.is-long {
               font-size: 12px;
             }
@@ -716,7 +721,7 @@ input::-webkit-inner-spin-button {
   }
 }
 
-#pdf-layout-container {
+.extensions__pdf-container {
   background-color: transparent;
 
   .extensions__pdf-toolbar .buttons {
@@ -817,12 +822,9 @@ input::-webkit-inner-spin-button {
     }
 
     [data-hl-type=area] {
-      display: flex;
-      margin-bottom: 10px;
-      flex-direction: column;
-
       .prefix-link {
-        display: inline;
+        padding-top: 5px;
+        display: block;
       }
 
       .hl-page {
@@ -978,6 +980,17 @@ body.is-pdf-active {
   }
 }
 
+html.is-system-window {
+  .extensions__pdf-container {
+    width: 100vw;
+    height: 100vh;
+  }
+
+  .extensions__pdf-loader {
+    @apply w-full;
+  }
+}
+
 /* overrides for pdf_viewer.css from PDF.JS web viewer */
 
 .textLayer {
@@ -1012,5 +1025,23 @@ body.is-pdf-active {
   &.selected {
     background-color: rgb(206 255 162);
     border: 2px dashed #ff3434;
+  }
+}
+
+.hl-flash {
+  animation-name: hl-flash;
+  animation-duration: 0.3s;
+  animation-timing-function: ease;
+  animation-iteration-count: 2;
+  animation-direction: alternate;
+  animation-play-state: running;
+}
+
+@keyframes hl-flash {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }

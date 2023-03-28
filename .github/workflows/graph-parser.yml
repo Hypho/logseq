@@ -24,11 +24,11 @@ defaults:
     working-directory: deps/graph-parser
 
 env:
-  CLOJURE_VERSION: '1.10.1.727'
+  CLOJURE_VERSION: '1.10.1.763'
   # This is the same as 1.8.
-  JAVA_VERSION: '8'
+  JAVA_VERSION: '11'
   # This is the latest node version we can run.
-  NODE_VERSION: '16'
+  NODE_VERSION: '18'
   BABASHKA_VERSION: '1.0.168'
 
 jobs:
@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c  # v3.3.0
 
       - name: Set up Node
         uses: actions/setup-node@v3
@@ -90,7 +90,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@ac593985615ec2ede58e132d2e21d2b1cbd6127c  # v3.3.0
 
       - name: Set up Java
         uses: actions/setup-java@v3

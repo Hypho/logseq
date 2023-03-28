@@ -4,9 +4,11 @@ This page describes development practices for this codebase.
 
 ## Linting
 
-Most of our linters require babashka. Before running them, please install
-https://github.com/babashka/babashka#installation. To invoke all the linters in
-this section, run `bb dev:lint`.
+Most of our linters require babashka. Before running them, please [install babashka](https://github.com/babashka/babashka#installation). To invoke all the linters in this section, run
+
+```sh
+bb dev:lint
+```
 
 ### Clojure code
 
@@ -75,6 +77,22 @@ error if it detects an invalid query.
 Our translations can be configured incorrectly. We can catch some of these
 mistakes [as noted here](./contributing-to-translations.md#fix-mistakes).
 
+### Spell Checker
+
+We use [typos](https://github.com/crate-ci/typos) to spell check our source code.
+
+To install it locally and use it:
+
+```sh
+$ brew install typos-cli
+# Catch any errors
+$ typos
+# Fix errors
+$ typos -w
+```
+
+To configure it e.g. for dealing with false positives, see `typos.toml`.
+
 ## Testing
 
 We have unit, performance and end to end tests.
@@ -95,7 +113,7 @@ yarn e2e-test # or npx playwright test
 If e2e failed after first running:
 - `rm -rdf ~/.logseq`
 - `rm -rdf ~/.config/Logseq`
-- `rm -rdf <repo dir>/tmp/`  
+- `rm -rdf <repo dir>/tmp/`
 - Windows: `rmdir /s %APPDATA%/Electron`  (Reference: https://www.electronjs.org/de/docs/latest/api/app#appgetpathname)
 
 There's a `traceAll()` helper function to enable playwright trace file dump for specific test files https://github.com/logseq/logseq/pull/8332
@@ -218,7 +236,8 @@ We use [malli](https://github.com/metosin/malli) for optionally validating fns
 a.k.a instrumenting fns. Function validation is enabled in dev mode. To add
 typing for a fn, just add it to a var's metadata [per this
 example](https://github.com/metosin/malli/blob/master/docs/function-schemas.md#function-schema-metadata).
-To re-generate the clj-kondo type annotations for malli typed fns, update
+We also have clj-kondo type annotations derived from these fn schemas. To
+re-generate them after new schemas have been added, update the namespaces in
 `gen-malli-kondo-config.core` and then run `bb dev:gen-malli-kondo-config`. To
 learn more about fn instrumentation, see [this
 page](https://github.com/metosin/malli/blob/master/docs/clojurescript-function-instrumentation.md).
@@ -227,11 +246,33 @@ page](https://github.com/metosin/malli/blob/master/docs/clojurescript-function-i
 
 Currently the codebase is not formatted/indented consistently. We loosely follow https://github.com/bbatsov/clojure-style-guide. [cljfmt](https://cljdoc.org/d/cljfmt/) is a common formatter used for Clojure, analogous to Prettier for other languages. You can do so easily with the [Calva](https://marketplace.visualstudio.com/items?itemName=betterthantomorrow.calva) extension in [VSCode](https://code.visualstudio.com/): It will (mostly) indent your code correctly as you type, and you can move your cursor to the start of the line(s) you've written and press `Tab` to auto-indent all Clojure forms nested under the one starting on the current line.
 
+## Naming
+
+We strive to use explicit names that are self explanatory so that our codebase is readable and maintainable. Sometimes we use abbreviations for frequently occurring concepts. Some common abbreviations:
+
+* `rpath` - Relative path e.g. `logseq/config.edn`
+* `fpath` -  Full path e.g. `/full/path/to/logseq/config.edn`
+
 ## Development Tools
 
-There are some babashka tasks under `nbb:` which are useful for inspecting
-database changes in realtime. See [these
-docs](https://github.com/logseq/bb-tasks#logseqbb-tasksnbbwatch) for more info.
+### Babashka tasks
+
+There are a number of bb tasks under `dev:` for developers. There are also some
+tasks under `nbb:` which are useful for inspecting database changes in realtime.
+See [these docs](https://github.com/logseq/bb-tasks#logseqbb-tasksnbbwatch) for
+more info.
+
+### Dev Commands
+
+In the app, you can enable Dev commands under `Settings > Advanced > Developer
+mode`. Then search for commands starting with `(Dev)`. Commands include
+inspectors for block/page data and AST.
+
+### Desktop Developer Tools
+
+Since the desktop app is built with Electron, a full set of Chromium developer
+tools is available under the menu `View > Toggle Developer Tools`. Handy tools
+include a JS console and HTML inspector.
 
 ## FAQ
 
